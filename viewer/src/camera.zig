@@ -3,34 +3,79 @@ const constants = @import("constants.zig");
 const data = @import("data.zig");
 const std = @import("std");
 
+pub const Bounds = struct {
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+
+    pub fn center(self: Bounds) rl.Vector2 {
+        return rl.vec2((self.min_x + self.max_x) / 2.0, (self.min_y + self.max_y) / 2.0);
+    }
+    pub fn width(self: Bounds) f32 {
+        return self.max_x - self.min_x;
+    }
+    pub fn height(self: Bounds) f32 {
+        return self.max_y - self.min_y;
+    }
+};
+
+pub fn computeBounds(points: []const data.Point) Bounds {
+    var b = Bounds{
+        .min_x = std.math.floatMax(f32),
+        .max_x = -std.math.floatMax(f32),
+        .min_y = std.math.floatMax(f32),
+        .max_y = -std.math.floatMax(f32),
+    };
+    for (points) |p| {
+        b.min_x = @min(b.min_x, p.x);
+        b.max_x = @max(b.max_x, p.x);
+        b.min_y = @min(b.min_y, p.y);
+        b.max_y = @max(b.max_y, p.y);
+    }
+    return b;
+}
+
 pub const CameraState = struct {
     cam: rl.Camera2D,
+    bounds: Bounds,
     dragging: bool = false,
     drag_start: rl.Vector2 = .{ .x = 0, .y = 0 },
     selected_point: ?u16 = null,
 
-    pub fn init() CameraState {
-        return .{
-            .cam = .{
-                .offset = .{
-                    .x = @as(f32, @floatFromInt(constants.WINDOW_W)) / 2.0,
-                    .y = @as(f32, @floatFromInt(constants.WINDOW_H)) / 2.0,
-                },
-                .target = .{ .x = 0, .y = 0 },
-                .rotation = 0,
-                .zoom = 25.0,
-            },
+    pub fn init(b: Bounds, sw: c_int, sh: c_int) CameraState {
+        var self = CameraState{
+            .cam = undefined,
+            .bounds = b,
+        };
+        self.fitToScreen(sw, sh);
+        return self;
+    }
+
+    pub fn fitToScreen(self: *CameraState, sw: c_int, sh: c_int) void {
+        const swf: f32 = @floatFromInt(sw);
+        const shf: f32 = @floatFromInt(sh);
+        const margin: f32 = 0.9;
+        const zoom_x = (swf * margin) / self.bounds.width();
+        const zoom_y = (shf * margin) / self.bounds.height();
+        self.cam = .{
+            .offset = rl.vec2(swf / 2.0, shf / 2.0),
+            .target = self.bounds.center(),
+            .rotation = 0,
+            .zoom = @min(zoom_x, zoom_y),
         };
     }
 
     pub fn update(self: *CameraState, points: ?[]const data.Point, sw: c_int, sh: c_int) void {
+        self.cam.offset = rl.vec2(@as(f32, @floatFromInt(sw)) / 2.0, @as(f32, @floatFromInt(sh)) / 2.0);
+
         const wheel = rl.getMouseWheelMove();
         if (wheel != 0) {
             const mouse_pos = rl.getMousePosition();
             const world_before = rl.getScreenToWorld2D(mouse_pos, self.cam);
 
             self.cam.zoom *= if (wheel > 0) 1.1 else 1.0 / 1.1;
-            self.cam.zoom = std.math.clamp(self.cam.zoom, 2.0, 200.0);
+            self.cam.zoom = std.math.clamp(self.cam.zoom, 2.0, 500.0);
 
             const world_after = rl.getScreenToWorld2D(mouse_pos, self.cam);
             self.cam.target.x += world_before.x - world_after.x;
@@ -55,7 +100,6 @@ pub const CameraState = struct {
 
         if (rl.isMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
             const mouse_pos = rl.getMousePosition();
-            _ = sw;
             if (mouse_pos.y < @as(f32, @floatFromInt(sh)) - 50) {
                 const world_pos = rl.getScreenToWorld2D(mouse_pos, self.cam);
                 self.selected_point = hitTest(world_pos, points, self.cam.zoom);
@@ -63,8 +107,7 @@ pub const CameraState = struct {
         }
 
         if (rl.isKeyPressed(rl.KEY_HOME)) {
-            self.cam.target = .{ .x = 0, .y = 0 };
-            self.cam.zoom = 25.0;
+            self.fitToScreen(sw, sh);
             self.selected_point = null;
         }
 
