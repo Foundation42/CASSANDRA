@@ -10,11 +10,14 @@ pub const PhysicsMode = enum {
 
 pub const Constants = struct {
     anchor_k_cold: f32 = 8.0,
-    anchor_k_hot: f32 = 0.3,
-    center_gravity: f32 = 5.0,
+    anchor_k_hot: f32 = 0.05,
+    anchor_power: f32 = 3.0, // cubic falloff: cold*(1-act)^3 so mid-activity nodes loosen fast
+    center_gravity: f32 = 3.0, // spring-to-origin: force = k * dist * activity
+    velocity_freeze: f32 = 0.01, // zero velocity below this speed
     repulsion_strength: f32 = 0.08,
-    repulsion_cutoff: f32 = 8.0,
+    repulsion_cutoff: f32 = 4.0,
     repulsion_min_dist: f32 = 0.3,
+    repulsion_activity_threshold: f32 = 0.01, // skip pairs where both below this
     damping: f32 = 0.05,
     attractor_spring_k: f32 = 1.5,
     attractor_spring_rest_len: f32 = 2.0,
@@ -176,18 +179,17 @@ pub const PhysicsState = struct {
             var fy: f32 = 0;
             const act = self.activity[i];
 
-            // 1. Anchor spring: cold=strong, hot=weak
-            const k = c.anchor_k_cold + (c.anchor_k_hot - c.anchor_k_cold) * act;
+            // 1. Anchor spring: cubic falloff so mid-activity nodes loosen fast
+            const inv_act = 1.0 - act;
+            const inv_act3 = inv_act * inv_act * inv_act; // (1-act)^3
+            const k = c.anchor_k_hot + (c.anchor_k_cold - c.anchor_k_hot) * inv_act3;
             fx += (self.rest_x[i] - self.pos_x[i]) * k;
             fy += (self.rest_y[i] - self.pos_y[i]) * k;
 
-            // 2. Center gravity proportional to activity
-            const dist_to_center = @sqrt(self.pos_x[i] * self.pos_x[i] + self.pos_y[i] * self.pos_y[i]);
-            if (dist_to_center > 0.01) {
-                const grav = c.center_gravity * act;
-                fx -= (self.pos_x[i] / dist_to_center) * grav;
-                fy -= (self.pos_y[i] / dist_to_center) * grav;
-            }
+            // 2. Center gravity: spring-to-origin, strength proportional to activity
+            // Force scales with distance so hot nodes far from center get pulled hard
+            fx -= self.pos_x[i] * c.center_gravity * act;
+            fy -= self.pos_y[i] * c.center_gravity * act;
 
             // 3. Attractor-satellite spring
             if (!self.is_attractor[i]) {
@@ -216,7 +218,10 @@ pub const PhysicsState = struct {
 
             // Velocity clamp
             const spd = @sqrt(self.vel_x[i] * self.vel_x[i] + self.vel_y[i] * self.vel_y[i]);
-            if (spd > c.max_velocity) {
+            if (spd < c.velocity_freeze) {
+                self.vel_x[i] = 0;
+                self.vel_y[i] = 0;
+            } else if (spd > c.max_velocity) {
                 const scale = c.max_velocity / spd;
                 self.vel_x[i] *= scale;
                 self.vel_y[i] *= scale;
@@ -226,22 +231,44 @@ pub const PhysicsState = struct {
             self.pos_y[i] += self.vel_y[i] * dt;
         }
 
-        // 4. Repulsion pass (separate to use updated positions consistently)
-        // We apply as velocity impulses rather than forces for stability
+        // 4. Repulsion pass — skip pairs where both nodes are cold
+        const cutoff2 = c.repulsion_cutoff * c.repulsion_cutoff;
+        const thresh = c.repulsion_activity_threshold;
         for (0..n) |i| {
-            for (i + 1..n) |j| {
-                const dx = self.pos_x[j] - self.pos_x[i];
-                const dy = self.pos_y[j] - self.pos_y[i];
-                const d2 = dx * dx + dy * dy;
-                if (d2 > c.repulsion_cutoff * c.repulsion_cutoff) continue;
-                const dist = @max(@sqrt(d2), c.repulsion_min_dist);
-                const force = c.repulsion_strength / (dist * dist);
-                const nx = dx / dist;
-                const ny = dy / dist;
-                self.vel_x[i] -= nx * force;
-                self.vel_y[i] -= ny * force;
-                self.vel_x[j] += nx * force;
-                self.vel_y[j] += ny * force;
+            const ai = self.activity[i];
+            if (ai < thresh) {
+                // Cold node: only check against hot nodes (j where activity >= thresh)
+                for (i + 1..n) |j| {
+                    if (self.activity[j] < thresh) continue;
+                    const dx = self.pos_x[j] - self.pos_x[i];
+                    const dy = self.pos_y[j] - self.pos_y[i];
+                    const d2 = dx * dx + dy * dy;
+                    if (d2 > cutoff2) continue;
+                    const dist = @max(@sqrt(d2), c.repulsion_min_dist);
+                    const force = c.repulsion_strength / (dist * dist);
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    self.vel_x[i] -= nx * force;
+                    self.vel_y[i] -= ny * force;
+                    self.vel_x[j] += nx * force;
+                    self.vel_y[j] += ny * force;
+                }
+            } else {
+                // Hot node: check against all
+                for (i + 1..n) |j| {
+                    const dx = self.pos_x[j] - self.pos_x[i];
+                    const dy = self.pos_y[j] - self.pos_y[i];
+                    const d2 = dx * dx + dy * dy;
+                    if (d2 > cutoff2) continue;
+                    const dist = @max(@sqrt(d2), c.repulsion_min_dist);
+                    const force = c.repulsion_strength / (dist * dist);
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    self.vel_x[i] -= nx * force;
+                    self.vel_y[i] -= ny * force;
+                    self.vel_x[j] += nx * force;
+                    self.vel_y[j] += ny * force;
+                }
             }
         }
     }
