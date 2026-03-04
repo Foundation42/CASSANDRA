@@ -107,7 +107,15 @@ pub fn drawLabels(points: []const data.Point, nd: *const data.NucleusData, cam: 
         const alpha: u8 = @intFromFloat(@min(255.0, 255.0 * p.fade));
         const col = if (p.is_attractor)
             rl.colorAlpha(constants.HUD_COLOR, alpha)
-        else
+        else if (is_moving_fast) blk: {
+            // White-hot to cool blue based on velocity
+            const v = std.math.clamp((p.speed - 1.0) / 8.0, 0.0, 1.0); // 1..9 u/s mapped to 0..1
+            const r: u8 = @intFromFloat(80.0 + 175.0 * v); // blue(80) -> white(255)
+            const g: u8 = @intFromFloat(120.0 + 135.0 * v); // blue(120) -> white(255)
+            const b: u8 = 255;
+            const va: u8 = @intFromFloat(@min(255.0, (100.0 + 155.0 * v) * p.fade)); // alpha ramps with speed
+            break :blk rl.color(r, g, b, va);
+        } else
             rl.colorAlpha(constants.LABEL_COLOR, alpha);
 
         var buf: [128]u8 = undefined;
