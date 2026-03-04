@@ -3,17 +3,74 @@ const rl = @import("rl.zig");
 const data = @import("data.zig");
 const constants = @import("constants.zig");
 
+/// Parse "YYYYMMDD_HHMMSS" to seconds since epoch (approximate, for relative spacing)
+fn parseTimestamp(ts: []const u8) i64 {
+    // Need at least "YYYYMMDD_HHMMSS" = 15 chars
+    if (ts.len < 15) return 0;
+    const y = parseInt(ts[0..4]);
+    const mo = parseInt(ts[4..6]);
+    const d = parseInt(ts[6..8]);
+    // ts[8] == '_'
+    const h = parseInt(ts[9..11]);
+    const mi = parseInt(ts[11..13]);
+    const s = parseInt(ts[13..15]);
+    // Approximate: good enough for relative spacing
+    return @as(i64, y) * 31536000 + @as(i64, mo) * 2592000 + @as(i64, d) * 86400 +
+        @as(i64, h) * 3600 + @as(i64, mi) * 60 + @as(i64, s);
+}
+
+fn parseInt(buf: []const u8) i32 {
+    var v: i32 = 0;
+    for (buf) |ch| {
+        if (ch >= '0' and ch <= '9') {
+            v = v * 10 + @as(i32, ch - '0');
+        }
+    }
+    return v;
+}
+
 pub const Timeline = struct {
     current_time: f32 = 0.0,
     playing: bool = false,
-    speed_idx: u8 = 2,
+    speed_idx: u8 = 2, // default 0.1x
     num_keyframes: u32 = 0,
+    tick_fracs: ?[]f32 = null, // timestamp-proportional positions [0..1]
 
     pub fn init(num_kf: u32) Timeline {
         return .{
             .num_keyframes = num_kf,
             .current_time = if (num_kf > 0) @as(f32, @floatFromInt(num_kf - 1)) else 0,
         };
+    }
+
+    /// Compute proportional tick positions from timestamp strings like "20260304_190133"
+    pub fn computeTickFracs(self: *Timeline, keyframes: []const data.Keyframe, allocator: std.mem.Allocator) !void {
+        if (keyframes.len < 2) return;
+        const n = keyframes.len;
+        self.tick_fracs = try allocator.alloc(f32, n);
+        const fracs = self.tick_fracs.?;
+
+        // Parse each timestamp to comparable seconds
+        const times = try allocator.alloc(i64, n);
+        defer allocator.free(times);
+        for (keyframes, 0..) |kf, i| {
+            times[i] = parseTimestamp(kf.timestamp);
+        }
+
+        const t0 = times[0];
+        const t_last = times[n - 1];
+        const span = t_last - t0;
+        if (span <= 0) {
+            // Fallback to uniform
+            for (0..n) |i| {
+                fracs[i] = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(n - 1));
+            }
+            return;
+        }
+
+        for (0..n) |i| {
+            fracs[i] = @as(f32, @floatFromInt(times[i] - t0)) / @as(f32, @floatFromInt(span));
+        }
     }
 
     pub fn update(self: *Timeline, dt: f32) void {

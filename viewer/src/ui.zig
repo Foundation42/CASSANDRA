@@ -130,7 +130,10 @@ pub fn drawScrubber(tl: *timeline_mod.Timeline, font: rl.Font, sw: c_int, sh: c_
 
     if (tl.num_keyframes > 1) {
         for (0..tl.num_keyframes) |i| {
-            const frac = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(tl.num_keyframes - 1));
+            const frac = if (tl.tick_fracs) |tf|
+                tf[i]
+            else
+                @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(tl.num_keyframes - 1));
             const tick_x = margin + frac * bar_w;
             rl.drawLineEx(
                 rl.vec2(tick_x, track_y - 6),
@@ -140,9 +143,15 @@ pub fn drawScrubber(tl: *timeline_mod.Timeline, font: rl.Font, sw: c_int, sh: c_
             );
         }
 
+        // Playback head: interpolate between tick positions
         const max_t: f32 = @floatFromInt(tl.num_keyframes - 1);
-        const frac = tl.current_time / max_t;
-        const head_x = margin + frac * bar_w;
+        const head_frac = if (tl.tick_fracs) |tf| blk: {
+            const ki = @min(@as(usize, @intFromFloat(@floor(tl.current_time))), tl.num_keyframes - 1);
+            const f = tl.current_time - @floor(tl.current_time);
+            if (ki >= tl.num_keyframes - 1) break :blk tf[tl.num_keyframes - 1];
+            break :blk tf[ki] + (tf[ki + 1] - tf[ki]) * f;
+        } else tl.current_time / max_t;
+        const head_x = margin + head_frac * bar_w;
         rl.drawCircleV(rl.vec2(head_x, track_y), 8, constants.SCRUBBER_FG);
     }
 
@@ -152,9 +161,26 @@ pub fn drawScrubber(tl: *timeline_mod.Timeline, font: rl.Font, sw: c_int, sh: c_
     if (rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
         const mouse = rl.getMousePosition();
         if (mouse.y >= bar_y and mouse.x >= margin and mouse.x <= margin + bar_w) {
-            const frac = (mouse.x - margin) / bar_w;
-            const max_t: f32 = @floatFromInt(tl.num_keyframes - 1);
-            tl.seek(frac * max_t);
+            const click_frac = (mouse.x - margin) / bar_w;
+            if (tl.tick_fracs) |tf| {
+                // Reverse-map: find which keyframe interval this click falls in
+                const max_t: f32 = @floatFromInt(tl.num_keyframes - 1);
+                var t: f32 = max_t;
+                for (0..tl.num_keyframes - 1) |i| {
+                    if (click_frac >= tf[i] and click_frac <= tf[i + 1]) {
+                        const local = if (tf[i + 1] > tf[i])
+                            (click_frac - tf[i]) / (tf[i + 1] - tf[i])
+                        else
+                            0;
+                        t = @as(f32, @floatFromInt(i)) + local;
+                        break;
+                    }
+                }
+                tl.seek(t);
+            } else {
+                const max_t: f32 = @floatFromInt(tl.num_keyframes - 1);
+                tl.seek(click_frac * max_t);
+            }
         }
     }
 }

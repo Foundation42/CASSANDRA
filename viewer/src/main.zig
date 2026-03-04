@@ -102,6 +102,7 @@ pub fn main() !void {
     const bounds = camera.computeBounds(nd.keyframes.items[nd.keyframes.items.len - 1].points);
     var cam_state = camera.CameraState.init(bounds, rl.getScreenWidth(), rl.getScreenHeight());
     var tl = timeline_mod.Timeline.init(@intCast(nd.keyframes.items.len));
+    try tl.computeTickFracs(nd.keyframes.items, allocator);
     var search = ui.SearchState{};
     var cluster_filter = ui.ClusterFilter{};
 
