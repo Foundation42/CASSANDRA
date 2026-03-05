@@ -164,6 +164,22 @@ fn lerp(a: f32, b: f32, t: f32) f32 {
     return a + (b - a) * t;
 }
 
+/// Deterministic stagger offset [0..0.7] from a name index, so each point
+/// gets a different "start time" within the transition window.
+fn nameStagger(name_idx: u16) f32 {
+    // Simple hash spread: multiply by golden ratio fraction, take fractional part
+    const h = @as(u32, name_idx) *% 2654435761;
+    return @as(f32, @floatFromInt(h >> 22)) / @as(f32, @floatFromInt(1 << 10)) * 0.7;
+}
+
+/// Remap global t [0..1] into a per-point t that starts at `offset` and
+/// reaches 1.0 by the end. Points with higher offsets appear later.
+fn staggeredT(global_t: f32, offset: f32) f32 {
+    const remaining = 1.0 - offset;
+    if (remaining <= 0) return global_t;
+    return smoothstep(std.math.clamp((global_t - offset) / remaining, 0.0, 1.0));
+}
+
 pub fn lerpPoints(
     a: []const data.Point,
     b: []const data.Point,
@@ -182,13 +198,16 @@ pub fn lerpPoints(
     for (a) |ap| {
         if (b_map.get(ap.name_idx)) |bi| {
             const bp = b[bi];
+            // Stagger delta changes: points that gain activity ramp up at different times
+            const stagger_offset = nameStagger(ap.name_idx);
+            const ds = staggeredT(s, stagger_offset);
             try result.append(.{
                 .name_idx = ap.name_idx,
                 .x = ap.x,
                 .y = ap.y,
                 .total = lerp(ap.total, bp.total, s),
                 .exemplars = lerp(ap.exemplars, bp.exemplars, s),
-                .delta = lerp(ap.delta, bp.delta, s),
+                .delta = lerp(ap.delta, bp.delta, ds),
                 .uncertainty = lerp(ap.uncertainty, bp.uncertainty, s),
                 .u_shift = lerp(ap.u_shift, bp.u_shift, s),
                 .fade = lerp(ap.fade, bp.fade, s),
@@ -212,8 +231,12 @@ pub fn lerpPoints(
             }
         }
         if (!found) {
+            // Stagger new point appearance across the transition
+            const stagger_offset = nameStagger(bp.name_idx);
+            const ss = staggeredT(s, stagger_offset);
             var fading_in = bp;
-            fading_in.fade *= s;
+            fading_in.fade *= ss;
+            fading_in.delta *= ss;
             try result.append(fading_in);
         }
     }
