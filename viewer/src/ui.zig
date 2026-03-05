@@ -70,7 +70,9 @@ pub fn drawHUD(
     num_keyframes: u32,
     tl: *const timeline_mod.Timeline,
     physics_active: bool,
+    keyframes: []const data.Keyframe,
 ) void {
+    _ = keyframes;
     const x: f32 = 20;
     var y: f32 = 20;
     const size: f32 = 16;
@@ -101,16 +103,21 @@ pub fn drawHUD(
     rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), size, 1.0, constants.HUD_DIM);
     y += size + 2;
 
-    _ = printZ(&buf, "SPEED: {d:.1}x", .{tl.speed()});
-    rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), size, 1.0, constants.HUD_DIM);
-    y += size + 2;
+    if (tl.playing) {
+        _ = printZ(&buf, "SPEED: {d:.0}x", .{tl.speed()});
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), size, 1.0, constants.HUD_DIM);
+        y += size + 2;
+    } else if (tl.live) {
+        rl.drawTextEx(font, "LIVE", rl.vec2(x, y), size, 1.0, constants.SCRUBBER_FG);
+        y += size + 2;
+    }
 
     if (physics_active) {
         rl.drawTextEx(font, "PHYSICS", rl.vec2(x, y), size, 1.0, constants.PHYSICS_COLOR);
     }
 }
 
-pub fn drawScrubber(tl: *timeline_mod.Timeline, font: rl.Font, sw: c_int, sh: c_int) void {
+pub fn drawScrubber(tl: *timeline_mod.Timeline, font: rl.Font, sw: c_int, sh: c_int, keyframes: []const data.Keyframe) void {
     const w: f32 = @floatFromInt(sw);
     const h: f32 = @floatFromInt(sh);
     const bar_h: f32 = 40;
@@ -128,59 +135,68 @@ pub fn drawScrubber(tl: *timeline_mod.Timeline, font: rl.Font, sw: c_int, sh: c_
         rl.colorAlpha(constants.SCRUBBER_FG, 60),
     );
 
-    if (tl.num_keyframes > 1) {
-        for (0..tl.num_keyframes) |i| {
-            const frac = if (tl.tick_fracs) |tf|
-                tf[i]
-            else
-                @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(tl.num_keyframes - 1));
-            const tick_x = margin + frac * bar_w;
-            rl.drawLineEx(
-                rl.vec2(tick_x, track_y - 6),
-                rl.vec2(tick_x, track_y + 6),
-                2,
-                rl.colorAlpha(constants.SCRUBBER_FG, 100),
-            );
+    if (tl.window > 0) {
+        // --- Ruler tick marks at natural intervals ---
+        const intervals = [_]f64{ 60, 300, 600, 1800, 3600, 7200, 21600, 86400 };
+        // Pick the largest interval that gives at least 3 ticks
+        var interval: f64 = 60;
+        for (intervals) |iv| {
+            if (tl.window / iv >= 3.0) {
+                interval = iv;
+            }
+        }
+        const ws = tl.windowStart();
+        const first_tick = @ceil(ws / interval) * interval;
+        var tick_t = first_tick;
+        while (tick_t <= tl.latest_time) : (tick_t += interval) {
+            if (tl.timeToFrac(tick_t)) |frac| {
+                const tick_x = margin + frac * bar_w;
+                rl.drawLineEx(
+                    rl.vec2(tick_x, track_y - 4),
+                    rl.vec2(tick_x, track_y + 4),
+                    1,
+                    rl.colorAlpha(constants.SCRUBBER_FG, 50),
+                );
+                // Draw time label for major ticks
+                const secs_ago: f64 = tl.latest_time - tick_t;
+                var label_buf: [16]u8 = undefined;
+                if (secs_ago < 60) {
+                    _ = printZ(&label_buf, "{d:.0}s", .{secs_ago});
+                } else if (secs_ago < 3600) {
+                    _ = printZ(&label_buf, "{d:.0}m", .{secs_ago / 60.0});
+                } else {
+                    _ = printZ(&label_buf, "{d:.1}h", .{secs_ago / 3600.0});
+                }
+                rl.drawTextEx(font, @ptrCast(&label_buf), rl.vec2(tick_x - 8, track_y + 8), 9, 1.0, rl.colorAlpha(constants.SCRUBBER_FG, 80));
+            }
         }
 
-        // Playback head: interpolate between tick positions
-        const max_t: f32 = @floatFromInt(tl.num_keyframes - 1);
-        const head_frac = if (tl.tick_fracs) |tf| blk: {
-            const ki = @min(@as(usize, @intFromFloat(@floor(tl.current_time))), tl.num_keyframes - 1);
-            const f = tl.current_time - @floor(tl.current_time);
-            if (ki >= tl.num_keyframes - 1) break :blk tf[tl.num_keyframes - 1];
-            break :blk tf[ki] + (tf[ki + 1] - tf[ki]) * f;
-        } else tl.current_time / max_t;
-        const head_x = margin + head_frac * bar_w;
-        rl.drawCircleV(rl.vec2(head_x, track_y), 8, constants.SCRUBBER_FG);
+        // --- Event dots (keyframe arrivals) ---
+        for (keyframes) |kf| {
+            const kf_t: f64 = @floatFromInt(kf.wall_time);
+            if (tl.timeToFrac(kf_t)) |frac| {
+                const dot_x = margin + frac * bar_w;
+                rl.drawCircleV(rl.vec2(dot_x, track_y), 3, rl.colorAlpha(constants.SCRUBBER_FG, 120));
+            }
+        }
+
+        // --- Playhead ---
+        if (tl.timeToFrac(tl.current_time)) |head_frac| {
+            const head_x = margin + head_frac * bar_w;
+            rl.drawCircleV(rl.vec2(head_x, track_y), 8, constants.SCRUBBER_FG);
+        }
     }
 
-    const play_text: [*:0]const u8 = if (tl.playing) "||" else ">";
+    const play_text: [*:0]const u8 = if (tl.live) "LIVE" else if (tl.playing) "||" else ">";
     rl.drawTextEx(font, play_text, rl.vec2(20, bar_y + 10), 18, 1.0, constants.SCRUBBER_FG);
 
+    // Click to seek
     if (rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
         const mouse = rl.getMousePosition();
         if (mouse.y >= bar_y and mouse.x >= margin and mouse.x <= margin + bar_w) {
-            const click_frac = (mouse.x - margin) / bar_w;
-            if (tl.tick_fracs) |tf| {
-                // Reverse-map: find which keyframe interval this click falls in
-                const max_t: f32 = @floatFromInt(tl.num_keyframes - 1);
-                var t: f32 = max_t;
-                for (0..tl.num_keyframes - 1) |i| {
-                    if (click_frac >= tf[i] and click_frac <= tf[i + 1]) {
-                        const local = if (tf[i + 1] > tf[i])
-                            (click_frac - tf[i]) / (tf[i + 1] - tf[i])
-                        else
-                            0;
-                        t = @as(f32, @floatFromInt(i)) + local;
-                        break;
-                    }
-                }
-                tl.seek(t);
-            } else {
-                const max_t: f32 = @floatFromInt(tl.num_keyframes - 1);
-                tl.seek(click_frac * max_t);
-            }
+            const click_frac: f64 = @floatCast((mouse.x - margin) / bar_w);
+            const click_time = tl.windowStart() + click_frac * tl.window;
+            tl.seek(click_time);
         }
     }
 }

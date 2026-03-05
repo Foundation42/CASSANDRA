@@ -41,14 +41,14 @@ pub fn main() !void {
     // Start with default bounds — camera will fit when first data arrives
     const default_bounds = camera.Bounds{ .min_x = -20, .max_x = 20, .min_y = -20, .max_y = 20 };
     var cam_state = camera.CameraState.init(default_bounds, rl.getScreenWidth(), rl.getScreenHeight());
-    var tl = timeline_mod.Timeline.init(0);
+    var tl = timeline_mod.Timeline.init();
     var search = ui.SearchState{};
     var cluster_filter = ui.ClusterFilter{};
 
     var interp_buf: ?[]data.Point = null;
     var phys = physics.PhysicsState.init(allocator);
     var phys_buf: ?[]data.Point = null;
-    var prev_ki: u32 = std.math.maxInt(u32);
+    var prev_ki: usize = std.math.maxInt(usize);
     var needs_camera_fit = true;
 
     while (!rl.windowShouldClose()) {
@@ -58,8 +58,6 @@ pub fn main() !void {
 
         // --- Live reload: check queue (lock-free pop, microseconds) ---
         if (queue.pop()) |result| {
-            const was_at_end = tl.wasAtEnd();
-
             // Update attractor info
             if (result.num_attractors > 0) {
                 nd.num_attractors = result.num_attractors;
@@ -68,7 +66,13 @@ pub fn main() !void {
                 }
             }
 
-            // Register any new names the worker discovered
+            // Register any new names the worker discovered.
+            // Sort by worker-assigned idx so main thread assigns identical indices.
+            std.mem.sort(live.NameEntry, result.new_names.items, {}, struct {
+                fn cmp(_: void, a: live.NameEntry, b: live.NameEntry) bool {
+                    return a.idx < b.idx;
+                }
+            }.cmp);
             for (result.new_names.items) |ne| {
                 _ = nd.getOrAddName(ne.synset, ne.word) catch continue;
             }
@@ -101,27 +105,18 @@ pub fn main() !void {
 
             nd.keyframes.append(kf) catch {};
 
-            // Drop oldest keyframes if over the cap
-            var evicted: u32 = 0;
-            while (nd.keyframes.items.len > constants.MAX_KEYFRAMES) {
-                const old_kf = nd.keyframes.orderedRemove(0);
-                allocator.free(old_kf.points);
-                evicted += 1;
+            // Time-based eviction: drop keyframes older than the timeline window
+            tl.noteArrival(kf.wall_time);
+            const cutoff = tl.windowStart();
+            while (nd.keyframes.items.len > 1) {
+                const oldest = nd.keyframes.items[0];
+                const oldest_t: f64 = @floatFromInt(oldest.wall_time);
+                if (oldest_t >= cutoff) break;
+                _ = nd.keyframes.orderedRemove(0);
+                allocator.free(oldest.points);
+                allocator.free(@constCast(oldest.timestamp));
             }
-            if (evicted > 0) {
-                tl.current_time = @max(tl.current_time - @as(f32, @floatFromInt(evicted)), 0.0);
-            }
-
-            tl.num_keyframes = @intCast(nd.keyframes.items.len);
-            tl.computeTickFracs(nd.keyframes.items, allocator) catch {};
-            tl.noteArrival();
-            const following = was_at_end or nd.keyframes.items.len == 1 or tl.follow_target != null;
-            if (following) {
-                // Snap playhead to end — no lag during fast bootstrap or eviction
-                const end: f32 = @floatFromInt(tl.num_keyframes - 1);
-                tl.current_time = end;
-                tl.follow_target = null;
-            }
+            tl.noteEviction(nd.keyframes.items);
 
             // Clean up result (frees arena — we've copied what we need)
             var r = result;
@@ -168,17 +163,18 @@ pub fn main() !void {
             continue;
         }
 
-        const ki = @min(tl.keyframeIndex(), @as(u32, @intCast(keyframes.len - 1)));
-        const frac = tl.interpFraction();
+        const bracket = tl.findBracket(keyframes);
+        const ki = bracket.a;
+        const frac = bracket.frac;
 
         const current_points: []const data.Point = blk: {
-            if (frac < 0.01 or ki >= keyframes.len - 1) {
+            if (frac < 0.01 or bracket.a == bracket.b) {
                 break :blk keyframes[ki].points;
             } else {
                 if (interp_buf) |buf| allocator.free(buf);
                 interp_buf = try timeline_mod.lerpPoints(
-                    keyframes[ki].points,
-                    keyframes[ki + 1].points,
+                    keyframes[bracket.a].points,
+                    keyframes[bracket.b].points,
                     frac,
                     allocator,
                 );
@@ -237,8 +233,8 @@ pub fn main() !void {
         render.drawLabels(render_points, &nd, cam_state.cam, font, &cluster_filter, cur_kf.max_delta);
         render.drawVignette(sw, sh);
 
-        ui.drawHUD(font, cur_kf.timestamp, cur_kf.num_visible, cur_kf.num_hot, @intCast(keyframes.len), &tl, phys.isActive());
-        ui.drawScrubber(&tl, font, sw, sh);
+        ui.drawHUD(font, cur_kf.timestamp, cur_kf.num_visible, cur_kf.num_hot, @intCast(keyframes.len), &tl, phys.isActive(), keyframes);
+        ui.drawScrubber(&tl, font, sw, sh, keyframes);
         ui.drawClusterFilter(&cluster_filter, sw);
         ui.drawSearchBar(&search, font, sw);
 

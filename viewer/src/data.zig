@@ -1,5 +1,6 @@
 const std = @import("std");
 const constants = @import("constants.zig");
+const timeline_mod = @import("timeline.zig");
 
 pub const Point = struct {
     name_idx: u16,
@@ -24,6 +25,7 @@ pub const Keyframe = struct {
     max_total: f32,
     num_hot: u32,
     num_visible: u32,
+    wall_time: i64 = 0,
 };
 
 pub const NucleusData = struct {
@@ -470,13 +472,15 @@ pub fn buildKeyframe(
         });
     }
 
+    const num_visible: u32 = @intCast(points.items.len);
     return .{
         .timestamp = timestamp,
         .points = try points.toOwnedSlice(),
         .max_delta = max_delta,
         .max_total = max_total,
         .num_hot = num_hot,
-        .num_visible = @intCast(points.items.len),
+        .num_visible = num_visible,
+        .wall_time = timeline_mod.parseTimestamp(timestamp),
     };
 }
 

@@ -164,6 +164,7 @@ pub const MOUSE_BUTTON_RIGHT = c.MOUSE_BUTTON_RIGHT;
 pub const KEY_SPACE = c.KEY_SPACE;
 pub const KEY_ESCAPE = c.KEY_ESCAPE;
 pub const KEY_HOME = c.KEY_HOME;
+pub const KEY_END = c.KEY_END;
 pub const KEY_LEFT = c.KEY_LEFT;
 pub const KEY_RIGHT = c.KEY_RIGHT;
 pub const KEY_LEFT_BRACKET = c.KEY_LEFT_BRACKET;

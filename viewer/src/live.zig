@@ -1,6 +1,7 @@
 const std = @import("std");
 const data = @import("data.zig");
 const constants = @import("constants.zig");
+const timeline_mod = @import("timeline.zig");
 
 /// A fully-built keyframe ready for the main thread to append.
 pub const ReadyKeyframe = struct {
@@ -564,12 +565,14 @@ fn buildKeyframeWorker(
         });
     }
 
+    const num_visible: u32 = @intCast(points.items.len);
     return .{
         .timestamp = timestamp,
         .points = try points.toOwnedSlice(),
         .max_delta = max_delta,
         .max_total = max_total,
         .num_hot = num_hot,
-        .num_visible = @intCast(points.items.len),
+        .num_visible = num_visible,
+        .wall_time = timeline_mod.parseTimestamp(timestamp),
     };
 }
