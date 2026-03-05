@@ -51,6 +51,7 @@ pub fn main() !void {
     var nav_num_paths: usize = 0;
     var nav_version: usize = 0;
     var navmesh_focus: ?u16 = null; // name_idx of focused attractor (null = show all)
+    var nav_attractor_hash: u64 = 0; // hash of attractor set paths were built for
 
     var interp_buf: ?[]data.Point = null;
     var phys = physics.PhysicsState.init(allocator);
@@ -144,6 +145,18 @@ pub fn main() !void {
             nav_num_paths = paths.len;
             for (paths, 0..) |p, i| {
                 nav_paths[i] = p;
+            }
+            // Record hash of the attractor set these paths were built for
+            {
+                var sorted_att: [constants.NUM_ATTRACTORS]u16 = undefined;
+                const n = nd.num_attractors;
+                @memcpy(sorted_att[0..n], nd.attractor_names[0..n]);
+                std.mem.sort(u16, sorted_att[0..n], {}, struct {
+                    fn cmp(_: void, a: u16, b: u16) bool {
+                        return a < b;
+                    }
+                }.cmp);
+                nav_attractor_hash = hashAttractors(sorted_att[0..n]);
             }
         }
 
@@ -296,6 +309,63 @@ pub fn main() !void {
             }
         }
 
+        // Recompute navmesh paths when the displayed attractor set changes (timeline scrub)
+        {
+            const AttPair = struct { idx: u16, cluster: u8 };
+            var att_pairs: [constants.NUM_ATTRACTORS]AttPair = undefined;
+            var n_att: usize = 0;
+            for (render_points) |p| {
+                if (p.is_attractor and n_att < constants.NUM_ATTRACTORS) {
+                    att_pairs[n_att] = .{ .idx = p.name_idx, .cluster = p.cluster };
+                    n_att += 1;
+                }
+            }
+            if (n_att > 0) {
+                // Sort by name_idx so hash is order-independent
+                std.mem.sort(AttPair, att_pairs[0..n_att], {}, struct {
+                    fn cmp(_: void, a: AttPair, b: AttPair) bool {
+                        return a.idx < b.idx;
+                    }
+                }.cmp);
+                var att_buf: [constants.NUM_ATTRACTORS]u16 = undefined;
+                var att_clusters: [constants.NUM_ATTRACTORS]u8 = undefined;
+                for (att_pairs[0..n_att], 0..) |ap, i| {
+                    att_buf[i] = ap.idx;
+                    att_clusters[i] = ap.cluster;
+                }
+                const cur_hash = hashAttractors(att_buf[0..n_att]);
+                if (cur_hash != nav_attractor_hash) {
+                    nav_attractor_hash = cur_hash;
+                    // Grab shared graph from queue
+                    queue.mutex.lock();
+                    const g_adj = queue.nav_adj;
+                    const g_adj_len = queue.nav_adj_len;
+                    const g_l2n = queue.nav_local_to_name;
+                    const g_n2l = queue.nav_name_to_local;
+                    queue.mutex.unlock();
+
+                    if (g_adj != null and g_adj_len != null and g_l2n != null and g_n2l != null) {
+                        const path_result = navmesh.computePaths(
+                            g_adj.?,
+                            g_adj_len.?,
+                            g_l2n.?,
+                            g_n2l.?,
+                            att_buf[0..n_att],
+                            att_clusters[0..n_att],
+                            allocator,
+                        ) catch null;
+                        if (path_result) |pr| {
+                            nav_num_paths = pr.num_paths;
+                            for (pr.paths[0..pr.num_paths], 0..) |p, i| {
+                                nav_paths[i] = p;
+                            }
+                            std.debug.print("Main: recomputed {d} navmesh paths for {d} attractors\n", .{ nav_num_paths, n_att });
+                        }
+                    }
+                }
+            }
+        }
+
         rl.beginMode2D(cam_state.cam);
         render.drawGrid(cam_state.cam, sw, sh);
         if (navmesh_on and nav_num_paths > 0) {
@@ -379,4 +449,14 @@ pub fn main() !void {
         rl.drawFPS(sw - 90, sh - 60);
         rl.endDrawing();
     }
+}
+
+/// Simple hash of an attractor name_idx slice to detect changes.
+fn hashAttractors(indices: []const u16) u64 {
+    var h: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
+    for (indices) |idx| {
+        h ^= @as(u64, idx);
+        h *%= 0x100000001b3; // FNV-1a prime
+    }
+    return h;
 }

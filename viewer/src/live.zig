@@ -45,6 +45,12 @@ pub const LiveQueue = struct {
     nav_num_paths: usize = 0,
     nav_version: usize = 0, // bumped when paths change
 
+    // Shared graph (written once by worker, read-only after)
+    nav_adj: ?[][navmesh.MAX_ADJ]u16 = null,
+    nav_adj_len: ?[]u8 = null,
+    nav_local_to_name: ?[]u16 = null,
+    nav_name_to_local: ?[]u16 = null,
+
     pub fn pop(self: *LiveQueue) ?*ReadyKeyframe {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -203,6 +209,13 @@ fn workerLoop(
                 nav_adj_len = r.adj_len;
                 nav_local_to_name = r.local_to_name;
                 nav_name_to_local = r.name_to_local;
+                // Publish graph to queue for main-thread BFS
+                queue.mutex.lock();
+                queue.nav_adj = r.adj;
+                queue.nav_adj_len = r.adj_len;
+                queue.nav_local_to_name = r.local_to_name;
+                queue.nav_name_to_local = r.name_to_local;
+                queue.mutex.unlock();
             }
         }
     }
