@@ -29,10 +29,10 @@ from datetime import datetime, timezone
 import feedparser
 
 from hourly import (
-    FEEDS, GLOVE_PATH, MODEL_STATE_PATH, SNAPSHOTS_DIR,
+    FEEDS, GLOVE_PATH, MODEL_STATE_PATH,
     feed_texts, load_or_compute_positions, load_recency, update_recency,
-    save_snapshot, save_delta,
 )
+from db import get_connection, ensure_schema, save_snapshot as db_save_snapshot
 from prototype import WordNetNucleusModel
 
 shutting_down = False
@@ -60,7 +60,7 @@ def fetch_one_feed(name, url):
 
 
 def save_cycle(model, recency, delta):
-    """Save model state, snapshot, delta, and positions. Returns snapshot path."""
+    """Save model state, snapshot, delta, and positions. Returns timestamp."""
     timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
 
     # Recency
@@ -71,15 +71,17 @@ def save_cycle(model, recency, delta):
     model.save(tmp_model)
     os.rename(tmp_model, MODEL_STATE_PATH)
 
-    # Snapshot + delta
+    # Snapshot + positions
     snapshot = model.snapshot()
-    snap_path = save_snapshot(snapshot, timestamp)
-    save_delta(delta, timestamp)
+    positions = load_or_compute_positions(model)
 
-    # Positions (adds new nuclei near neighbors)
-    load_or_compute_positions(model)
+    # Write to SQLite
+    db_conn = get_connection()
+    ensure_schema(db_conn)
+    db_save_snapshot(db_conn, snapshot, delta, positions, timestamp)
+    db_conn.close()
 
-    return recency, timestamp, snap_path
+    return recency, timestamp
 
 
 def main():
@@ -92,8 +94,6 @@ def main():
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
-
-    os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
 
     # Load model once
     print("Loading model...")
@@ -129,7 +129,7 @@ def main():
             total = sum(delta.values())
 
             if delta:
-                recency, ts, snap_path = save_cycle(model, recency, delta)
+                recency, ts = save_cycle(model, recency, delta)
 
                 top = sorted(delta.items(), key=lambda x: x[1], reverse=True)[:3]
                 names = ', '.join(f"{n}({c})" for n, c in top)
