@@ -121,8 +121,8 @@ pub const WorldMap = struct {
         if (now - self.last_click_time < 0.4) {
             self.last_click_time = 0;
             if (hit) |idx| {
+                const was_selected = if (self.selected) |cur| cur == idx else false;
                 self.selected = idx;
-                // Zoom to region bounds
                 const b = self.regionBounds(idx);
                 const swf: f32 = @floatFromInt(sw);
                 const shf: f32 = @floatFromInt(sh);
@@ -130,8 +130,17 @@ pub const WorldMap = struct {
                 const zoom_x = (swf * margin) / @max(b.width(), 0.5);
                 const zoom_y = (shf * margin) / @max(b.height(), 0.5);
                 const target_zoom = @min(@min(zoom_x, zoom_y), 80.0);
-                const c = self.regions[idx].centroid;
-                cam_state.startAnim(target_zoom, rl.vec2(c[0], c[1]));
+
+                if (was_selected and cam_state.cam.zoom >= target_zoom * 0.9) {
+                    // Already zoomed in on this region — zoom back out to fit all
+                    self.selected = null;
+                    const fit_m: f32 = 0.9;
+                    const fit_zoom = @min((swf * fit_m) / cam_state.bounds.width(), (shf * fit_m) / cam_state.bounds.height());
+                    cam_state.startAnim(fit_zoom, cam_state.bounds.center());
+                } else {
+                    const c = self.regions[idx].centroid;
+                    cam_state.startAnim(target_zoom, rl.vec2(c[0], c[1]));
+                }
             }
         } else {
             self.last_click_time = now;
