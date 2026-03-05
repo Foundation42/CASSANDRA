@@ -14,12 +14,11 @@ pub const ReadyKeyframe = struct {
     // Attractor info for main thread to update nd
     attractor_name_indices: [constants.NUM_ATTRACTORS]u16,
     num_attractors: usize,
-    // Arena that owns all string data in this result
-    arena: std.heap.ArenaAllocator,
 
     pub fn deinit(self: *ReadyKeyframe) void {
-        // Don't free arena — worker's persistent state (recency, anchors, name_to_idx)
-        // holds keys allocated from per-snapshot arenas.
+        // Lists use arena allocator — deinit is a no-op but keeps the API clean.
+        // Arena lifetime is managed by the worker loop (freed after main consumes
+        // this result AND the worker is done with prev_snap from this arena).
         self.new_names.deinit();
         self.new_positions.deinit();
     }
@@ -128,7 +127,7 @@ fn workerLoop(
         const snap_path = std.fmt.allocPrint(boot_alloc, "../snapshots/snap_{s}.json", .{lts}) catch null;
         if (snap_path) |sp| {
             if (readFile(boot_alloc, sp)) |snap_bytes| {
-                if (parseSnapshot(boot_alloc, snap_bytes, &anchors, &name_to_idx, &next_idx)) |snap_result| {
+                if (parseSnapshot(boot_alloc, page, snap_bytes, &anchors, &name_to_idx, &next_idx)) |snap_result| {
                     var snap_mut = snap_result;
                     const raw_att = data.findAttractors(&snap_mut, boot_alloc) catch &.{};
                     // Dupe attractor names to page_allocator (persistent)
@@ -162,6 +161,11 @@ fn workerLoop(
     // --- Bootstrap: process all existing snapshots chronologically ---
     // findNewTimestamp returns the oldest unknown, so the loop naturally processes in order
     var bootstrapping = true;
+    // Arena lifetime: each iteration's arena must stay alive until the NEXT iteration
+    // finishes using prev_snap (which references data from this arena). So we keep
+    // two arenas: prev_arena (for prev_snap) and the current one. We free prev_arena
+    // after building the keyframe (which is the last use of prev_snap).
+    var prev_arena: ?std.heap.ArenaAllocator = null;
 
     while (!queue.shutdown.load(.acquire)) {
         if (!bootstrapping) {
@@ -169,7 +173,7 @@ fn workerLoop(
             if (queue.shutdown.load(.acquire)) break;
         }
 
-        // Wait for slot to be free
+        // Wait for slot to be free (ensures main thread consumed previous result)
         {
             queue.mutex.lock();
             const has_pending = queue.ready != null;
@@ -204,11 +208,11 @@ fn workerLoop(
         // Parse positions (merge new ones)
         var new_positions = std.ArrayList(PosEntry).init(alloc);
         if (pos_bytes) |pb| {
-            parseAndMergePositions(alloc, pb, &positions, &new_positions) catch {};
+            parseAndMergePositions(alloc, page, pb, &positions, &new_positions) catch {};
         }
 
         // Parse snapshot
-        var snapshot_map = parseSnapshot(alloc, snap_bytes, &anchors, &name_to_idx, &next_idx) catch continue;
+        var snapshot_map = parseSnapshot(alloc, page, snap_bytes, &anchors, &name_to_idx, &next_idx) catch continue;
 
         // Parse delta
         var delta_map = parseDelta(alloc, delta_bytes) catch std.StringHashMap(i64).init(alloc);
@@ -220,8 +224,12 @@ fn workerLoop(
         }
         var dk_it = delta_map.iterator();
         while (dk_it.next()) |d_entry| {
-            const key = alloc.dupe(u8, d_entry.key_ptr.*) catch continue;
-            recency.put(key, 0) catch {};
+            if (!recency.contains(d_entry.key_ptr.*)) {
+                const key = page.dupe(u8, d_entry.key_ptr.*) catch continue;
+                recency.put(key, 0) catch {};
+            } else {
+                recency.put(d_entry.key_ptr.*, 0) catch {};
+            }
         }
         // Evict old
         const evict_threshold: u32 = @intFromFloat(constants.FADE_WINDOW * 2);
@@ -238,7 +246,7 @@ fn workerLoop(
             }
         }
 
-        // Build keyframe
+        // Build keyframe (last use of prev_snap — references data in prev_arena)
         const ts_copy = alloc.dupe(u8, ts) catch continue;
         const kf = buildKeyframeWorker(
             alloc,
@@ -277,9 +285,12 @@ fn workerLoop(
             attractor_name_indices[i] = name_to_idx.get(aname) orelse 0;
         }
 
-        // Update prev_snap
+        // Done with prev_snap — free its arena. Main thread already consumed
+        // the previous ReadyKeyframe (we waited for queue slot above).
         if (prev_snap) |*ps| ps.deinit();
+        if (prev_arena) |*pa| pa.deinit();
         prev_snap = snapshot_map;
+        prev_arena = arena;
 
         // Build result
         const result = page.create(ReadyKeyframe) catch continue;
@@ -290,7 +301,6 @@ fn workerLoop(
             .new_positions = new_positions,
             .attractor_name_indices = attractor_name_indices,
             .num_attractors = num_attractors,
-            .arena = arena,
         };
 
         // Push to queue (brief lock)
@@ -370,6 +380,7 @@ fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
 
 fn parseAndMergePositions(
     alloc: std.mem.Allocator,
+    persist_alloc: std.mem.Allocator,
     bytes: []const u8,
     positions: *std.StringHashMap([2]f32),
     new_positions: *std.ArrayList(PosEntry),
@@ -392,14 +403,18 @@ fn parseAndMergePositions(
             .integer => @floatFromInt(arr[1].integer),
             else => 0.0,
         };
-        const name_copy = try alloc.dupe(u8, name);
-        try positions.put(name_copy, .{ x, y });
-        try new_positions.append(.{ .name = name_copy, .pos = .{ x, y } });
+        // positions is persistent — key must outlive the arena
+        const persist_name = try persist_alloc.dupe(u8, name);
+        try positions.put(persist_name, .{ x, y });
+        // new_positions is temporary (consumed by main thread before arena freed)
+        const temp_name = try alloc.dupe(u8, name);
+        try new_positions.append(.{ .name = temp_name, .pos = .{ x, y } });
     }
 }
 
 fn parseSnapshot(
     alloc: std.mem.Allocator,
+    persist_alloc: std.mem.Allocator,
     bytes: []const u8,
     anchors: *std.StringHashMap([constants.ANCHOR_DIM]f32),
     name_to_idx: *std.StringHashMap(u16),
@@ -449,7 +464,7 @@ fn parseSnapshot(
                     };
                 }
                 if (!anchors.contains(name)) {
-                    const akey = try alloc.dupe(u8, name);
+                    const akey = try persist_alloc.dupe(u8, name);
                     try anchors.put(akey, anchor_f32);
                 }
             }
@@ -458,9 +473,10 @@ fn parseSnapshot(
         const name_copy = try alloc.dupe(u8, name);
         const word_copy = try alloc.dupe(u8, word);
 
-        // Register name index (worker's own table)
-        if (!name_to_idx.contains(name_copy)) {
-            try name_to_idx.put(name_copy, next_idx.*);
+        // Register name index (worker's own table) — key must outlive the arena
+        if (!name_to_idx.contains(name)) {
+            const persist_key = try persist_alloc.dupe(u8, name);
+            try name_to_idx.put(persist_key, next_idx.*);
             next_idx.* += 1;
         }
 
