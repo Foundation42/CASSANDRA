@@ -144,6 +144,9 @@ pub fn isMouseButtonReleased(button: c_int) bool {
 pub fn isKeyPressed(key: c_int) bool {
     return c.IsKeyPressed(key);
 }
+pub fn isKeyDown(key: c_int) bool {
+    return c.IsKeyDown(key);
+}
 pub fn getCharPressed() c_int {
     return c.GetCharPressed();
 }
@@ -184,3 +187,4 @@ pub const KEY_G = c.KEY_G;
 pub const KEY_N = c.KEY_N;
 pub const KEY_T = c.KEY_T;
 pub const KEY_B = c.KEY_B;
+pub const KEY_LEFT_SHIFT = c.KEY_LEFT_SHIFT;

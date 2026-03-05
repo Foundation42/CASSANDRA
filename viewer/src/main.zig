@@ -210,6 +210,8 @@ pub fn main() !void {
             if (rl.isKeyPressed(rl.KEY_E)) {
                 edges_on = !edges_on;
             }
+            // Shift-click: select/deselect world map region
+            if (wmap) |*m| m.handleInput(cam_state.cam);
         }
         tl.update(dt);
 
