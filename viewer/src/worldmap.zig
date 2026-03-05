@@ -3,7 +3,7 @@ const rl = @import("rl.zig");
 
 const BORDER_COLOR = rl.color(40, 60, 90, 160);
 const SELECTED_BORDER_COLOR = rl.color(80, 140, 200, 220);
-const FILL_COLOR = rl.color(200, 30, 30, 120);
+const FILL_COLOR = rl.color(30, 70, 130, 50);
 const LABEL_COLOR = rl.color(40, 50, 70, 60);
 const LABEL_ZOOM_MIN: f32 = 0.8;
 const LABEL_ZOOM_MAX: f32 = 6.0;
