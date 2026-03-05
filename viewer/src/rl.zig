@@ -180,3 +180,5 @@ pub const KEY_SIX = c.KEY_SIX;
 pub const KEY_SEVEN = c.KEY_SEVEN;
 pub const KEY_EIGHT = c.KEY_EIGHT;
 pub const KEY_G = c.KEY_G;
+pub const KEY_T = c.KEY_T;
+pub const KEY_B = c.KEY_B;

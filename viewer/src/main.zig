@@ -9,6 +9,7 @@ const constants = @import("constants.zig");
 const physics = @import("physics.zig");
 const live = @import("live.zig");
 const bvh = @import("bvh.zig");
+const effects = @import("effects.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -55,6 +56,10 @@ pub fn main() !void {
     // BVH and visible-set buffers (stack-allocated, ~90KB)
     var frame_bvh: bvh.FrameBvh = undefined;
     var visible_buf: [bvh.MAX_POINTS]u16 = undefined;
+
+    // Post-processing effects (trails + bloom)
+    var fx: effects.Effects = .{};
+    defer fx.deinit();
 
     while (!rl.windowShouldClose()) {
         const dt = rl.getFrameTime();
@@ -141,6 +146,7 @@ pub fn main() !void {
         if (rl.isKeyPressed(rl.KEY_F11) or rl.isKeyPressed(rl.KEY_F)) {
             rl.toggleFullscreen();
         }
+        fx.handleInput();
         if (search.active) {
             search.handleInput();
         } else {
@@ -154,18 +160,28 @@ pub fn main() !void {
         tl.update(dt);
 
         // --- Drawing ---
-        rl.beginDrawing();
-        rl.clearBackground(constants.BG_COLOR);
+        // Ensure effects textures match window size
+        fx.handleResize(sw, sh);
 
         const keyframes = nd.keyframes.items;
         if (keyframes.len == 0) {
-            // Loading screen
+            // Loading screen — direct to screen, no effects
+            rl.beginDrawing();
+            rl.clearBackground(constants.BG_COLOR);
             rl.drawTextEx(font, "CASSANDRA", rl.vec2(20, 20), 24, 2.0, constants.HUD_COLOR);
             rl.drawTextEx(font, "WordNet Nucleus Observer", rl.vec2(20, 52), 11, 1.0, constants.HUD_DIM);
             rl.drawTextEx(font, "Loading snapshots...", rl.vec2(20, 72), 14, 1.0, constants.HUD_DIM);
             rl.drawFPS(sw - 90, sh - 60);
             rl.endDrawing();
             continue;
+        }
+
+        // Begin scene: if effects active, render to texture; otherwise direct to screen
+        if (fx.anyActive()) {
+            fx.beginScene();
+        } else {
+            rl.beginDrawing();
+            rl.clearBackground(constants.BG_COLOR);
         }
 
         const bracket = tl.findBracket(keyframes);
@@ -255,9 +271,15 @@ pub fn main() !void {
         }
         rl.endMode2D();
 
+        // End scene: composite effects (trails/bloom), then draw overlays on top
+        if (fx.anyActive()) {
+            fx.endScene();
+            // endScene calls beginDrawing internally and composites the scene
+        }
+
+        // Labels, vignette, and HUD drawn AFTER effects so they stay crisp
         render.drawLabels(render_points, &nd, cam_state.cam, font, &cluster_filter, cur_kf.max_delta, visible);
         render.drawVignette(sw, sh);
-
         ui.drawHUD(font, cur_kf.timestamp, cur_kf.num_visible, cur_kf.num_hot, @intCast(keyframes.len), &tl, phys.isActive(), keyframes);
         ui.drawScrubber(&tl, font, sw, sh, keyframes);
         ui.drawClusterFilter(&cluster_filter, sw);
@@ -265,6 +287,24 @@ pub fn main() !void {
 
         if (cam_state.selected_point) |sel| {
             ui.drawDetailPanel(render_points, sel, &nd, font, sw);
+        }
+
+        // Effects status indicator
+        if (fx.trails_on or fx.bloom_on) {
+            var fx_buf: [32]u8 = undefined;
+            const fx_label = blk: {
+                if (fx.trails_on and fx.bloom_on) {
+                    break :blk "FX: TRAILS + BLOOM";
+                } else if (fx.trails_on) {
+                    break :blk "FX: TRAILS";
+                } else {
+                    break :blk "FX: BLOOM";
+                }
+            };
+            @memcpy(fx_buf[0..fx_label.len], fx_label);
+            fx_buf[fx_label.len] = 0;
+            const text: [*:0]const u8 = @ptrCast(&fx_buf);
+            rl.drawTextEx(font, text, rl.vec2(10, @as(f32, @floatFromInt(sh)) - 30), 10, 1.0, constants.HUD_DIM);
         }
 
         rl.drawFPS(sw - 90, sh - 60);
