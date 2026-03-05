@@ -50,6 +50,7 @@ pub fn main() !void {
     var nav_paths: [navmesh.MAX_ATTRACTOR_PAIRS]navmesh.NavPath = undefined;
     var nav_num_paths: usize = 0;
     var nav_version: usize = 0;
+    var navmesh_focus: ?u16 = null; // name_idx of focused attractor (null = show all)
 
     var interp_buf: ?[]data.Point = null;
     var phys = physics.PhysicsState.init(allocator);
@@ -170,6 +171,10 @@ pub fn main() !void {
             }
             if (rl.isKeyPressed(rl.KEY_N)) {
                 navmesh_on = !navmesh_on;
+                if (!navmesh_on) navmesh_focus = null;
+            }
+            if (rl.isKeyPressed(rl.KEY_ESCAPE)) {
+                navmesh_focus = null;
             }
             if (rl.isKeyPressed(rl.KEY_E)) {
                 edges_on = !edges_on;
@@ -274,10 +279,27 @@ pub fn main() !void {
 
         cam_state.update(render_points, sw, sh, &frame_bvh);
 
+        // Update navmesh focus on click: clicking an attractor focuses paths from it
+        if (navmesh_on and rl.isMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
+            // Check if the just-selected point is an attractor
+            if (cam_state.selected_point) |sel| {
+                if (sel < render_points.len and render_points[sel].is_attractor) {
+                    const clicked_name = render_points[sel].name_idx;
+                    if (navmesh_focus) |current| {
+                        navmesh_focus = if (current == clicked_name) null else clicked_name;
+                    } else {
+                        navmesh_focus = clicked_name;
+                    }
+                }
+            } else {
+                navmesh_focus = null; // clicked empty space
+            }
+        }
+
         rl.beginMode2D(cam_state.cam);
         render.drawGrid(cam_state.cam, sw, sh);
         if (navmesh_on and nav_num_paths > 0) {
-            render.drawNavmesh(render_points, nav_paths[0..nav_num_paths], &cluster_filter);
+            render.drawNavmesh(render_points, nav_paths[0..nav_num_paths], &cluster_filter, navmesh_focus);
         }
         if (edges_on) render.drawConnectionLines(render_points, &nd, &cluster_filter, visible);
         render.drawGlow(render_points, cur_kf.max_delta, &cluster_filter, visible);

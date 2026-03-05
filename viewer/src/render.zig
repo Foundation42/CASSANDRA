@@ -240,10 +240,15 @@ pub fn drawNavmesh(
     points: []const data.Point,
     nav_paths: []const navmesh.NavPath,
     cf: *const ui.ClusterFilter,
+    focus: ?u16,
 ) void {
     for (nav_paths) |path| {
         if (path.len < 2) continue;
         if (!cf.isVisible(path.cluster_a) and !cf.isVisible(path.cluster_b)) continue;
+
+        // Must have a focused attractor to show paths
+        const f = focus orelse continue;
+        if (path.nodes[0] != f and path.nodes[path.len - 1] != f) continue;
 
         // Blend color from the two endpoint clusters
         const ca = constants.PALETTE[path.cluster_a % constants.NUM_CLUSTERS];
