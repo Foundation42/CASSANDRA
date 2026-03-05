@@ -1,6 +1,7 @@
 const std = @import("std");
 const rl = @import("rl.zig");
 
+const LAND_COLOR = rl.color(18, 18, 30, 255);
 const BORDER_COLOR = rl.color(40, 60, 90, 160);
 const SELECTED_BORDER_COLOR = rl.color(80, 140, 200, 220);
 const FILL_COLOR = rl.color(30, 70, 130, 50);
@@ -129,7 +130,16 @@ pub const WorldMap = struct {
         const tl = rl.getScreenToWorld2D(rl.vec2(0, 0), cam);
         const br = rl.getScreenToWorld2D(rl.vec2(@floatFromInt(sw), @floatFromInt(sh)), cam);
 
-        // Draw fills for selected region first (behind all borders)
+        // Fill all land masses (opaque, hides grid behind countries)
+        for (self.regions) |region| {
+            for (region.polygons) |poly| {
+                if (poly.max_x < tl.x or poly.min_x > br.x) continue;
+                if (poly.max_y < tl.y or poly.min_y > br.y) continue;
+                fillPolygon(poly.points, poly.tris, LAND_COLOR);
+            }
+        }
+
+        // Highlight fill for selected region
         if (self.selected) |sel| {
             const region = self.regions[sel];
             for (region.polygons) |poly| {
