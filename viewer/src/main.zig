@@ -366,7 +366,7 @@ pub fn main() !void {
         if (navmesh_on and nav_num_paths > 0) {
             render.drawNavmesh(render_points, nav_paths[0..nav_num_paths], &cluster_filter, navmesh_focus);
         }
-        if (edges_on) render.drawConnectionLines(render_points, &nd, &cluster_filter, visible);
+        if (edges_on) render.drawConnectionLines(render_points, &cluster_filter, visible);
         render.drawGlow(render_points, cur_kf.max_delta, &cluster_filter, visible);
         render.drawDots(render_points, cur_kf.max_total, cur_kf.max_delta, &cluster_filter, visible);
         render.drawAttractorRings(render_points, &cluster_filter, visible);

@@ -27,21 +27,19 @@ pub fn drawGrid(cam: rl.Camera2D, sw: c_int, sh: c_int) void {
     }
 }
 
-pub fn drawConnectionLines(points: []const data.Point, nd: *const data.NucleusData, cf: *const ui.ClusterFilter, visible: []const u16) void {
+pub fn drawConnectionLines(points: []const data.Point, cf: *const ui.ClusterFilter, visible: []const u16) void {
+    // Build attractor index → position from the displayed points themselves.
+    // Scan all points (not just visible) to preserve attractor ordering that
+    // matches nearest_attractor indices baked into each point.
     var att_pos: [constants.NUM_ATTRACTORS]rl.Vector2 = undefined;
     var att_found: [constants.NUM_ATTRACTORS]bool = .{false} ** constants.NUM_ATTRACTORS;
+    var att_count: usize = 0;
 
-    // Attractors: scan visible only (attractors must be visible to draw lines to them)
-    for (visible) |idx| {
-        const p = points[idx];
-        if (p.is_attractor) {
-            for (0..nd.num_attractors) |ai| {
-                if (nd.attractor_names[ai] == p.name_idx) {
-                    att_pos[ai] = rl.vec2(p.x, p.y);
-                    att_found[ai] = true;
-                    break;
-                }
-            }
+    for (points) |p| {
+        if (p.is_attractor and att_count < constants.NUM_ATTRACTORS) {
+            att_pos[att_count] = rl.vec2(p.x, p.y);
+            att_found[att_count] = true;
+            att_count += 1;
         }
     }
 
@@ -51,7 +49,7 @@ pub fn drawConnectionLines(points: []const data.Point, nd: *const data.NucleusDa
         if (p.is_attractor) continue;
         if (p.fade < 0.1) continue;
         const ai = p.nearest_attractor;
-        if (ai < constants.NUM_ATTRACTORS and att_found[ai]) {
+        if (ai < constants.NUM_ATTRACTORS and ai < att_count and att_found[ai]) {
             const alpha: u8 = @intFromFloat(@min(255.0, @max(0.0, 30.0 * p.fade)));
             rl.drawLineV(rl.vec2(p.x, p.y), att_pos[ai], rl.color(60, 60, 80, alpha));
         }
