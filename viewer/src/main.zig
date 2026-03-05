@@ -8,6 +8,7 @@ const ui = @import("ui.zig");
 const constants = @import("constants.zig");
 const physics = @import("physics.zig");
 const live = @import("live.zig");
+const bvh = @import("bvh.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -50,6 +51,10 @@ pub fn main() !void {
     var phys_buf: ?[]data.Point = null;
     var prev_ki: usize = std.math.maxInt(usize);
     var needs_camera_fit = true;
+
+    // BVH and visible-set buffers (stack-allocated, ~90KB)
+    var frame_bvh: bvh.FrameBvh = undefined;
+    var visible_buf: [bvh.MAX_POINTS]u16 = undefined;
 
     while (!rl.windowShouldClose()) {
         const dt = rl.getFrameTime();
@@ -213,24 +218,44 @@ pub fn main() !void {
         else
             current_points;
 
-        cam_state.update(render_points, sw, sh);
+        // --- Build BVH and compute visible set ---
+        frame_bvh.buildFromPoints(render_points);
+
+        // Get viewport world bounds (with margin for labels/glow)
+        const margin_px: f32 = 60.0; // pixels of margin for glow/labels that extend past viewport
+        const top_left = rl.getScreenToWorld2D(rl.vec2(-margin_px, -margin_px), cam_state.cam);
+        const bot_right = rl.getScreenToWorld2D(rl.vec2(
+            @as(f32, @floatFromInt(sw)) + margin_px,
+            @as(f32, @floatFromInt(sh)) + margin_px,
+        ), cam_state.cam);
+
+        var viewport_iter = frame_bvh.bvh.queryAABB(top_left.x, top_left.y, bot_right.x, bot_right.y);
+        var n_visible: usize = 0;
+        while (viewport_iter.next()) |idx| {
+            if (n_visible >= bvh.MAX_POINTS) break;
+            visible_buf[n_visible] = idx;
+            n_visible += 1;
+        }
+        const visible = visible_buf[0..n_visible];
+
+        cam_state.update(render_points, sw, sh, &frame_bvh);
 
         rl.beginMode2D(cam_state.cam);
         render.drawGrid(cam_state.cam, sw, sh);
-        render.drawConnectionLines(render_points, &nd, &cluster_filter);
-        render.drawGlow(render_points, cur_kf.max_delta, &cluster_filter);
-        render.drawDots(render_points, cur_kf.max_total, cur_kf.max_delta, &cluster_filter);
-        render.drawAttractorRings(render_points, &cluster_filter);
+        render.drawConnectionLines(render_points, &nd, &cluster_filter, visible);
+        render.drawGlow(render_points, cur_kf.max_delta, &cluster_filter, visible);
+        render.drawDots(render_points, cur_kf.max_total, cur_kf.max_delta, &cluster_filter, visible);
+        render.drawAttractorRings(render_points, &cluster_filter, visible);
 
         if (cam_state.selected_point) |sel| {
             render.drawHighlight(render_points, sel);
         }
         if (search.len > 0) {
-            render.drawSearchHighlights(render_points, &nd, search.query());
+            render.drawSearchHighlights(render_points, &nd, search.query(), visible);
         }
         rl.endMode2D();
 
-        render.drawLabels(render_points, &nd, cam_state.cam, font, &cluster_filter, cur_kf.max_delta);
+        render.drawLabels(render_points, &nd, cam_state.cam, font, &cluster_filter, cur_kf.max_delta, visible);
         render.drawVignette(sw, sh);
 
         ui.drawHUD(font, cur_kf.timestamp, cur_kf.num_visible, cur_kf.num_hot, @intCast(keyframes.len), &tl, phys.isActive(), keyframes);

@@ -26,11 +26,13 @@ pub fn drawGrid(cam: rl.Camera2D, sw: c_int, sh: c_int) void {
     }
 }
 
-pub fn drawConnectionLines(points: []const data.Point, nd: *const data.NucleusData, cf: *const ui.ClusterFilter) void {
+pub fn drawConnectionLines(points: []const data.Point, nd: *const data.NucleusData, cf: *const ui.ClusterFilter, visible: []const u16) void {
     var att_pos: [constants.NUM_ATTRACTORS]rl.Vector2 = undefined;
     var att_found: [constants.NUM_ATTRACTORS]bool = .{false} ** constants.NUM_ATTRACTORS;
 
-    for (points) |p| {
+    // Attractors: scan visible only (attractors must be visible to draw lines to them)
+    for (visible) |idx| {
+        const p = points[idx];
         if (p.is_attractor) {
             for (0..nd.num_attractors) |ai| {
                 if (nd.attractor_names[ai] == p.name_idx) {
@@ -42,7 +44,8 @@ pub fn drawConnectionLines(points: []const data.Point, nd: *const data.NucleusDa
         }
     }
 
-    for (points) |p| {
+    for (visible) |idx| {
+        const p = points[idx];
         if (hidden(cf, p.cluster)) continue;
         if (p.is_attractor) continue;
         if (p.fade < 0.1) continue;
@@ -54,8 +57,9 @@ pub fn drawConnectionLines(points: []const data.Point, nd: *const data.NucleusDa
     }
 }
 
-pub fn drawGlow(points: []const data.Point, max_delta: f32, cf: *const ui.ClusterFilter) void {
-    for (points) |p| {
+pub fn drawGlow(points: []const data.Point, max_delta: f32, cf: *const ui.ClusterFilter, visible: []const u16) void {
+    for (visible) |idx| {
+        const p = points[idx];
         if (hidden(cf, p.cluster)) continue;
         if (p.delta <= 0 or p.fade < 0.05) continue;
         const intensity = p.delta / @max(max_delta, 1.0);
@@ -66,8 +70,9 @@ pub fn drawGlow(points: []const data.Point, max_delta: f32, cf: *const ui.Cluste
     }
 }
 
-pub fn drawDots(points: []const data.Point, max_total: f32, max_delta: f32, cf: *const ui.ClusterFilter) void {
-    for (points) |p| {
+pub fn drawDots(points: []const data.Point, max_total: f32, max_delta: f32, cf: *const ui.ClusterFilter, visible: []const u16) void {
+    for (visible) |idx| {
+        const p = points[idx];
         if (hidden(cf, p.cluster)) continue;
         if (p.fade < 0.05) continue;
         const base_r: f32 = 0.04 + (p.total / @max(max_total, 1.0)) * 0.15;
@@ -81,8 +86,9 @@ pub fn drawDots(points: []const data.Point, max_total: f32, max_delta: f32, cf: 
     }
 }
 
-pub fn drawAttractorRings(points: []const data.Point, cf: *const ui.ClusterFilter) void {
-    for (points) |p| {
+pub fn drawAttractorRings(points: []const data.Point, cf: *const ui.ClusterFilter, visible: []const u16) void {
+    for (visible) |idx| {
+        const p = points[idx];
         if (!p.is_attractor) continue;
         if (hidden(cf, p.cluster)) continue;
         const cc = constants.PALETTE[p.cluster % constants.NUM_CLUSTERS];
@@ -91,43 +97,118 @@ pub fn drawAttractorRings(points: []const data.Point, cf: *const ui.ClusterFilte
     }
 }
 
-pub fn drawLabels(points: []const data.Point, nd: *const data.NucleusData, cam: rl.Camera2D, font: rl.Font, cf: *const ui.ClusterFilter, max_delta: f32) void {
-    for (points) |p| {
+fn labelImportance(p: data.Point, max_delta: f32, zoom: f32) f32 {
+    if (p.is_attractor) return 10.0; // always above any budget cut
+    const activity: f32 = if (max_delta > 0) p.delta / max_delta else 0;
+    const spd = std.math.clamp(p.speed / 4.0, 0.0, 1.0);
+    const zoom_reveal = std.math.clamp((zoom - 20.0) / 100.0, 0.0, 1.0);
+    return @max(@max(activity, spd), zoom_reveal) * p.fade;
+}
+
+const LabelSlot = struct { idx: u16, importance: f32 };
+const MAX_LABELS = 50;
+
+pub fn drawLabels(points: []const data.Point, nd: *const data.NucleusData, cam: rl.Camera2D, font: rl.Font, cf: *const ui.ClusterFilter, max_delta: f32, visible: []const u16) void {
+    const sw: f32 = @floatFromInt(rl.getScreenWidth());
+    const sh: f32 = @floatFromInt(rl.getScreenHeight());
+    const margin: f32 = 50; // small margin so labels near edges still appear
+
+    // --- Pass 1: collect top-K non-attractor labels by importance (viewport only) ---
+    var slots: [MAX_LABELS]LabelSlot = undefined;
+    var n_slots: usize = 0;
+    var min_imp: f32 = 0;
+    var min_idx: usize = 0;
+
+    for (visible) |vi| {
+        const p = points[vi];
         if (hidden(cf, p.cluster)) continue;
         if (p.fade < 0.1) continue;
-        const word = nd.displayWord(p.name_idx);
+        if (p.is_attractor) continue;
 
-        const is_moving_fast = p.speed > 1.0;
-        // Label points with significant relative delta (> 30% of max) so big glows always have names
-        const is_hot = max_delta > 0 and (p.delta / max_delta) > 0.3;
-        const is_labeled = p.is_attractor or is_moving_fast or is_hot or (cam.zoom > 40 and p.delta > 5) or (cam.zoom > 80);
-        if (!is_labeled) continue;
+        // Viewport cull: skip points not on screen
+        const sp = rl.getWorldToScreen2D(rl.vec2(p.x, p.y), cam);
+        if (sp.x < -margin or sp.x > sw + margin or sp.y < -margin or sp.y > sh + margin) continue;
 
-        const font_size: f32 = if (p.is_attractor) 14.0 else if (is_moving_fast) 11.0 else 10.0;
-        const screen_pos = rl.getWorldToScreen2D(rl.vec2(p.x, p.y), cam);
+        const imp = labelImportance(p, max_delta, cam.zoom);
+        if (imp < 0.15) continue;
 
-        const alpha: u8 = @intFromFloat(@min(255.0, 255.0 * p.fade));
-        const col = if (p.is_attractor)
-            rl.colorAlpha(constants.HUD_COLOR, alpha)
-        else if (is_moving_fast) blk: {
-            // White-hot to cool blue based on velocity
-            const v = std.math.clamp((p.speed - 1.0) / 8.0, 0.0, 1.0); // 1..9 u/s mapped to 0..1
-            const r: u8 = @intFromFloat(80.0 + 175.0 * v); // blue(80) -> white(255)
-            const g: u8 = @intFromFloat(120.0 + 135.0 * v); // blue(120) -> white(255)
-            const b: u8 = 255;
-            const va: u8 = @intFromFloat(@min(255.0, (100.0 + 155.0 * v) * p.fade)); // alpha ramps with speed
-            break :blk rl.color(r, g, b, va);
-        } else
-            rl.colorAlpha(constants.LABEL_COLOR, alpha);
-
-        var buf: [128]u8 = undefined;
-        const len = @min(word.len, 127);
-        @memcpy(buf[0..len], word[0..len]);
-        buf[len] = 0;
-        const text: [*:0]const u8 = @ptrCast(&buf);
-
-        rl.drawTextEx(font, text, rl.vec2(screen_pos.x + 8, screen_pos.y - font_size / 2), font_size, 1.0, col);
+        if (n_slots < MAX_LABELS) {
+            slots[n_slots] = .{ .idx = vi, .importance = imp };
+            n_slots += 1;
+            // Recompute min when buffer fills
+            if (n_slots == MAX_LABELS) {
+                min_imp = slots[0].importance;
+                min_idx = 0;
+                for (0..n_slots) |j| {
+                    if (slots[j].importance < min_imp) {
+                        min_imp = slots[j].importance;
+                        min_idx = j;
+                    }
+                }
+            }
+        } else if (imp > min_imp) {
+            slots[min_idx] = .{ .idx = vi, .importance = imp };
+            // Find new min
+            min_imp = slots[0].importance;
+            min_idx = 0;
+            for (0..MAX_LABELS) |j| {
+                if (slots[j].importance < min_imp) {
+                    min_imp = slots[j].importance;
+                    min_idx = j;
+                }
+            }
+        }
     }
+
+    // Find the importance threshold (lowest in the budget) for alpha fade
+    const threshold: f32 = if (n_slots == MAX_LABELS) min_imp else 0.15;
+
+    // --- Pass 2: draw attractor labels (always) + budgeted labels ---
+    for (visible) |vi| {
+        const p = points[vi];
+        if (!p.is_attractor) continue;
+        if (hidden(cf, p.cluster)) continue;
+        if (p.fade < 0.1) continue;
+        drawOneLabel(p, nd, cam, font, 1.0);
+    }
+
+    for (slots[0..n_slots]) |slot| {
+        const p = points[slot.idx];
+        // Fade: full alpha for top labels, fade near the cutoff
+        const above = slot.importance - threshold;
+        const range = if (n_slots == MAX_LABELS) @max(slots[0].importance, threshold + 0.01) - threshold else 0.5;
+        const alpha = std.math.clamp(above / (range * 0.3), 0.0, 1.0) * p.fade;
+        if (alpha < 0.02) continue;
+        drawOneLabel(p, nd, cam, font, alpha);
+    }
+}
+
+fn drawOneLabel(p: data.Point, nd: *const data.NucleusData, cam: rl.Camera2D, font: rl.Font, label_alpha: f32) void {
+    const word = nd.displayWord(p.name_idx);
+    const is_moving_fast = p.speed > 1.0;
+    const font_size: f32 = if (p.is_attractor) 14.0 else if (is_moving_fast) 11.0 else 10.0;
+    const screen_pos = rl.getWorldToScreen2D(rl.vec2(p.x, p.y), cam);
+
+    const alpha: u8 = @intFromFloat(@min(255.0, 255.0 * label_alpha));
+    const col = if (p.is_attractor)
+        rl.colorAlpha(constants.HUD_COLOR, alpha)
+    else if (is_moving_fast) blk: {
+        const v = std.math.clamp((p.speed - 1.0) / 8.0, 0.0, 1.0);
+        const r: u8 = @intFromFloat(80.0 + 175.0 * v);
+        const g: u8 = @intFromFloat(120.0 + 135.0 * v);
+        const b: u8 = 255;
+        const va: u8 = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(alpha)) * (0.4 + 0.6 * v)));
+        break :blk rl.color(r, g, b, va);
+    } else
+        rl.color(200, 200, 220, alpha);
+
+    var buf: [128]u8 = undefined;
+    const len = @min(word.len, 127);
+    @memcpy(buf[0..len], word[0..len]);
+    buf[len] = 0;
+    const text: [*:0]const u8 = @ptrCast(&buf);
+
+    rl.drawTextEx(font, text, rl.vec2(screen_pos.x + 8, screen_pos.y - font_size / 2), font_size, 1.0, col);
 }
 
 
@@ -144,9 +225,10 @@ pub fn drawHighlight(points: []const data.Point, idx: u16) void {
     rl.drawCircleLinesV(rl.vec2(p.x, p.y), 0.45, rl.colorAlpha(constants.HIGHLIGHT_COLOR, 120));
 }
 
-pub fn drawSearchHighlights(points: []const data.Point, nd: *const data.NucleusData, query: []const u8) void {
+pub fn drawSearchHighlights(points: []const data.Point, nd: *const data.NucleusData, query: []const u8, visible: []const u16) void {
     if (query.len == 0) return;
-    for (points) |p| {
+    for (visible) |idx| {
+        const p = points[idx];
         const word = nd.displayWord(p.name_idx);
         if (containsInsensitive(word, query)) {
             rl.drawCircleLinesV(rl.vec2(p.x, p.y), 0.35, constants.HIGHLIGHT_COLOR);

@@ -1,6 +1,7 @@
 const rl = @import("rl.zig");
 const constants = @import("constants.zig");
 const data = @import("data.zig");
+const bvh = @import("bvh.zig");
 const std = @import("std");
 
 pub const Bounds = struct {
@@ -66,7 +67,7 @@ pub const CameraState = struct {
         };
     }
 
-    pub fn update(self: *CameraState, points: ?[]const data.Point, sw: c_int, sh: c_int) void {
+    pub fn update(self: *CameraState, points: ?[]const data.Point, sw: c_int, sh: c_int, frame_bvh: ?*const bvh.FrameBvh) void {
         self.cam.offset = rl.vec2(@as(f32, @floatFromInt(sw)) / 2.0, @as(f32, @floatFromInt(sh)) / 2.0);
 
         const wheel = rl.getMouseWheelMove();
@@ -102,7 +103,7 @@ pub const CameraState = struct {
             const mouse_pos = rl.getMousePosition();
             if (mouse_pos.y < @as(f32, @floatFromInt(sh)) - 50) {
                 const world_pos = rl.getScreenToWorld2D(mouse_pos, self.cam);
-                self.selected_point = hitTest(world_pos, points, self.cam.zoom);
+                self.selected_point = hitTest(world_pos, points, self.cam.zoom, frame_bvh);
             }
         }
 
@@ -117,9 +118,16 @@ pub const CameraState = struct {
     }
 };
 
-fn hitTest(world_pos: rl.Vector2, points: ?[]const data.Point, zoom: f32) ?u16 {
-    const pts = points orelse return null;
+fn hitTest(world_pos: rl.Vector2, points: ?[]const data.Point, zoom: f32, frame_bvh: ?*const bvh.FrameBvh) ?u16 {
     const hit_radius = 15.0 / zoom;
+
+    // Use BVH fast path if available
+    if (frame_bvh) |fb| {
+        return fb.nearest(world_pos.x, world_pos.y, hit_radius);
+    }
+
+    // Fallback: linear scan
+    const pts = points orelse return null;
     var best_dist: f32 = hit_radius * hit_radius;
     var best_idx: ?u16 = null;
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const data = @import("data.zig");
+const bvh = @import("bvh.zig");
 
 pub const PhysicsMode = enum {
     off,
@@ -221,23 +222,29 @@ pub const PhysicsState = struct {
             self.vel_y[i] *= damp;
         }
 
-        // 4. Repulsion pass — activity-weighted, skip cold-cold pairs
-        const cutoff2 = c.repulsion_cutoff * c.repulsion_cutoff;
+        // 4. Repulsion pass — BVH-accelerated, activity-weighted
         const thresh = c.repulsion_activity_threshold;
+        var rep_bvh: bvh.Bvh = undefined;
+        rep_bvh.build(self.pos_x[0..n], self.pos_y[0..n], n);
+
         for (0..n) |i| {
             const act_i = self.activity[i];
             const is_cold = act_i < thresh;
-            for (i + 1..n) |j| {
+            var iter = rep_bvh.queryRadius(
+                self.pos_x[i],
+                self.pos_y[i],
+                c.repulsion_cutoff,
+                self.pos_x[0..n],
+                self.pos_y[0..n],
+            );
+            while (iter.next()) |j| {
+                if (j <= i) continue; // avoid double-counting
                 const act_j = self.activity[j];
-                // Skip cold-cold pairs
                 if (is_cold and act_j < thresh) continue;
                 const dx = self.pos_x[j] - self.pos_x[i];
                 const dy = self.pos_y[j] - self.pos_y[i];
                 const d2 = dx * dx + dy * dy;
-                if (d2 > cutoff2) continue;
                 const dist = @max(@sqrt(d2), c.repulsion_min_dist);
-                // Scale repulsion by activity product: hot-hot pairs repel hard,
-                // hot-cold stays at baseline so attractors push through the cloud
                 const activity_scale = 1.0 + c.repulsion_activity_boost * act_i * act_j;
                 const force = c.repulsion_strength * activity_scale / (dist * dist);
                 const nx = dx / dist;
