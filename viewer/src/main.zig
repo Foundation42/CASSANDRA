@@ -10,6 +10,7 @@ const physics = @import("physics.zig");
 const live = @import("live.zig");
 const bvh = @import("bvh.zig");
 const effects = @import("effects.zig");
+const navmesh = @import("navmesh.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -43,6 +44,12 @@ pub fn main() !void {
     var tl = timeline_mod.Timeline.init();
     var search = ui.SearchState{};
     var cluster_filter = ui.ClusterFilter{};
+
+    var navmesh_on = false;
+    var edges_on = true;
+    var nav_paths: [navmesh.MAX_ATTRACTOR_PAIRS]navmesh.NavPath = undefined;
+    var nav_num_paths: usize = 0;
+    var nav_version: usize = 0;
 
     var interp_buf: ?[]data.Point = null;
     var phys = physics.PhysicsState.init(allocator);
@@ -131,6 +138,14 @@ pub fn main() !void {
             std.heap.page_allocator.destroy(r);
         }
 
+        // Check for navmesh path updates (separate from keyframe queue)
+        if (queue.getNavPaths(&nav_version)) |paths| {
+            nav_num_paths = paths.len;
+            for (paths, 0..) |p, i| {
+                nav_paths[i] = p;
+            }
+        }
+
         // Fit camera when first data arrives
         if (needs_camera_fit and nd.keyframes.items.len > 0) {
             const bounds = camera.computeBounds(nd.keyframes.items[nd.keyframes.items.len - 1].points);
@@ -152,6 +167,12 @@ pub fn main() !void {
             cluster_filter.handleInput();
             if (rl.isKeyPressed(rl.KEY_G)) {
                 phys.toggle();
+            }
+            if (rl.isKeyPressed(rl.KEY_N)) {
+                navmesh_on = !navmesh_on;
+            }
+            if (rl.isKeyPressed(rl.KEY_E)) {
+                edges_on = !edges_on;
             }
         }
         tl.update(dt);
@@ -255,7 +276,10 @@ pub fn main() !void {
 
         rl.beginMode2D(cam_state.cam);
         render.drawGrid(cam_state.cam, sw, sh);
-        render.drawConnectionLines(render_points, &nd, &cluster_filter, visible);
+        if (navmesh_on and nav_num_paths > 0) {
+            render.drawNavmesh(render_points, nav_paths[0..nav_num_paths], &cluster_filter);
+        }
+        if (edges_on) render.drawConnectionLines(render_points, &nd, &cluster_filter, visible);
         render.drawGlow(render_points, cur_kf.max_delta, &cluster_filter, visible);
         render.drawDots(render_points, cur_kf.max_total, cur_kf.max_delta, &cluster_filter, visible);
         render.drawAttractorRings(render_points, &cluster_filter, visible);
@@ -287,21 +311,44 @@ pub fn main() !void {
         }
 
         // Effects status indicator
-        if (fx.trails_on or fx.bloom_on) {
-            var fx_buf: [32]u8 = undefined;
-            const fx_label = blk: {
-                if (fx.trails_on and fx.bloom_on) {
-                    break :blk "FX: TRAILS + BLOOM";
-                } else if (fx.trails_on) {
-                    break :blk "FX: TRAILS";
-                } else {
-                    break :blk "FX: BLOOM";
+        {
+            var fx_buf: [64]u8 = undefined;
+            var fx_len: usize = 0;
+            if (fx.trails_on or fx.bloom_on or navmesh_on or !edges_on) {
+                @memcpy(fx_buf[0..4], "FX: ");
+                fx_len = 4;
+                if (fx.trails_on) {
+                    @memcpy(fx_buf[fx_len..][0..6], "TRAILS");
+                    fx_len += 6;
                 }
-            };
-            @memcpy(fx_buf[0..fx_label.len], fx_label);
-            fx_buf[fx_label.len] = 0;
-            const text: [*:0]const u8 = @ptrCast(&fx_buf);
-            rl.drawTextEx(font, text, rl.vec2(10, @as(f32, @floatFromInt(sh)) - 30), 10, 1.0, constants.HUD_DIM);
+                if (fx.bloom_on) {
+                    if (fx_len > 4) {
+                        @memcpy(fx_buf[fx_len..][0..3], " + ");
+                        fx_len += 3;
+                    }
+                    @memcpy(fx_buf[fx_len..][0..5], "BLOOM");
+                    fx_len += 5;
+                }
+                if (navmesh_on) {
+                    if (fx_len > 4) {
+                        @memcpy(fx_buf[fx_len..][0..3], " + ");
+                        fx_len += 3;
+                    }
+                    @memcpy(fx_buf[fx_len..][0..7], "NAVMESH");
+                    fx_len += 7;
+                }
+                if (!edges_on) {
+                    if (fx_len > 4) {
+                        @memcpy(fx_buf[fx_len..][0..3], " + ");
+                        fx_len += 3;
+                    }
+                    @memcpy(fx_buf[fx_len..][0..8], "NO EDGES");
+                    fx_len += 8;
+                }
+                fx_buf[fx_len] = 0;
+                const text: [*:0]const u8 = @ptrCast(&fx_buf);
+                rl.drawTextEx(font, text, rl.vec2(10, @as(f32, @floatFromInt(sh)) - 30), 10, 1.0, constants.HUD_DIM);
+            }
         }
 
         rl.drawFPS(sw - 90, sh - 60);

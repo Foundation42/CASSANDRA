@@ -20,6 +20,8 @@ pub const SCRUBBER_FG = rl.color(0, 255, 180, 200);
 pub const SEARCH_BG = rl.color(15, 15, 25, 230);
 pub const HIGHLIGHT_COLOR = rl.color(255, 255, 0, 255);
 pub const PHYSICS_COLOR = rl.color(255, 120, 50, 255);
+pub const NAVMESH_COLOR = rl.color(0, 200, 255, 80);
+pub const NAVMESH_DOT_COLOR = rl.color(0, 200, 255, 140);
 
 pub const PALETTE = [8]rl.Color{
     rl.color(255, 77, 77, 255),

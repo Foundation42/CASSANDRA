@@ -3,6 +3,7 @@ const rl = @import("rl.zig");
 const data = @import("data.zig");
 const constants = @import("constants.zig");
 const ui = @import("ui.zig");
+const navmesh = @import("navmesh.zig");
 
 fn hidden(cf: *const ui.ClusterFilter, cluster: u8) bool {
     return !cf.isVisible(cluster);
@@ -234,6 +235,58 @@ fn drawOneLabel(p: data.Point, nd: *const data.NucleusData, cam: rl.Camera2D, fo
 }
 
 
+
+pub fn drawNavmesh(
+    points: []const data.Point,
+    nav_paths: []const navmesh.NavPath,
+    cf: *const ui.ClusterFilter,
+) void {
+    for (nav_paths) |path| {
+        if (path.len < 2) continue;
+        if (!cf.isVisible(path.cluster_a) and !cf.isVisible(path.cluster_b)) continue;
+
+        // Blend color from the two endpoint clusters
+        const ca = constants.PALETTE[path.cluster_a % constants.NUM_CLUSTERS];
+        const cb = constants.PALETTE[path.cluster_b % constants.NUM_CLUSTERS];
+        const line_col = rl.color(
+            @intCast((@as(u16, ca.r) + @as(u16, cb.r)) / 2),
+            @intCast((@as(u16, ca.g) + @as(u16, cb.g)) / 2),
+            @intCast((@as(u16, ca.b) + @as(u16, cb.b)) / 2),
+            160,
+        );
+        const dot_col = rl.color(
+            @intCast((@as(u16, ca.r) + @as(u16, cb.r)) / 2),
+            @intCast((@as(u16, ca.g) + @as(u16, cb.g)) / 2),
+            @intCast((@as(u16, ca.b) + @as(u16, cb.b)) / 2),
+            220,
+        );
+
+        // Draw segments
+        var prev_pos: ?rl.Vector2 = null;
+        for (0..path.len) |pi| {
+            const name_idx = path.nodes[pi];
+            const pos = findPointPos(points, name_idx) orelse continue;
+
+            if (prev_pos) |pp| {
+                rl.drawLineEx(pp, pos, 0.12, line_col);
+            }
+            prev_pos = pos;
+
+            // Draw waypoint dot for intermediate nodes
+            if (pi > 0 and pi < path.len - 1) {
+                rl.drawCircleV(pos, 0.12, dot_col);
+            }
+        }
+    }
+}
+
+fn findPointPos(points: []const data.Point, name_idx: u16) ?rl.Vector2 {
+    // Linear scan — paths are short and this runs ~45 times per frame
+    for (points) |p| {
+        if (p.name_idx == name_idx) return rl.vec2(p.x, p.y);
+    }
+    return null;
+}
 
 pub fn drawVignette(sw: c_int, sh: c_int) void {
     _ = sw;

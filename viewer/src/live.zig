@@ -2,6 +2,7 @@ const std = @import("std");
 const data = @import("data.zig");
 const constants = @import("constants.zig");
 const db_mod = @import("db.zig");
+const navmesh = @import("navmesh.zig");
 
 /// A fully-built keyframe ready for the main thread to append.
 pub const ReadyKeyframe = struct {
@@ -14,7 +15,6 @@ pub const ReadyKeyframe = struct {
     // Attractor info for main thread to update nd
     attractor_name_indices: [constants.NUM_ATTRACTORS]u16,
     num_attractors: usize,
-
     pub fn deinit(self: *ReadyKeyframe) void {
         self.new_names.deinit();
         self.new_positions.deinit();
@@ -40,12 +40,33 @@ pub const LiveQueue = struct {
     shutdown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     thread: ?std.Thread = null,
 
+    // Navmesh paths — written by worker under mutex, read by main thread
+    nav_paths: [navmesh.MAX_ATTRACTOR_PAIRS]navmesh.NavPath = undefined,
+    nav_num_paths: usize = 0,
+    nav_version: usize = 0, // bumped when paths change
+
     pub fn pop(self: *LiveQueue) ?*ReadyKeyframe {
         self.mutex.lock();
         defer self.mutex.unlock();
         const r = self.ready;
         self.ready = null;
         return r;
+    }
+
+    pub fn getNavPaths(self: *LiveQueue, last_version: *usize) ?[]const navmesh.NavPath {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.nav_version == last_version.* or self.nav_num_paths == 0) return null;
+        last_version.* = self.nav_version;
+        return self.nav_paths[0..self.nav_num_paths];
+    }
+
+    fn pushNavPaths(self: *LiveQueue, paths: [navmesh.MAX_ATTRACTOR_PAIRS]navmesh.NavPath, num: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.nav_paths = paths;
+        self.nav_num_paths = num;
+        self.nav_version += 1;
     }
 
     pub fn requestShutdown(self: *LiveQueue) void {
@@ -152,6 +173,38 @@ fn workerLoop(
             }
         }
         pos_list.deinit();
+    }
+
+    // --- Build kNN graph for navmesh (one-time) ---
+    var nav_adj: ?[][navmesh.MAX_ADJ]u16 = null;
+    var nav_adj_len: ?[]u8 = null;
+    var nav_local_to_name: ?[]u16 = null;
+    var nav_name_to_local: ?[]u16 = null;
+    var nav_paths: [navmesh.MAX_ATTRACTOR_PAIRS]navmesh.NavPath = undefined;
+    var nav_num_paths: usize = 0;
+    {
+        // Collect all anchors + name indices
+        var graph_names = std.ArrayList(u16).init(page);
+        var graph_anchors = std.ArrayList([constants.ANCHOR_DIM]f32).init(page);
+        var anch_it = anchors.iterator();
+        while (anch_it.next()) |entry| {
+            const ni = name_to_idx.get(entry.key_ptr.*) orelse continue;
+            graph_names.append(ni) catch continue;
+            graph_anchors.append(entry.value_ptr.*) catch continue;
+        }
+        if (graph_names.items.len > 1) {
+            const graph_result = navmesh.buildGraph(
+                graph_names.items,
+                graph_anchors.items,
+                page,
+            ) catch null;
+            if (graph_result) |r| {
+                nav_adj = r.adj;
+                nav_adj_len = r.adj_len;
+                nav_local_to_name = r.local_to_name;
+                nav_name_to_local = r.name_to_local;
+            }
+        }
     }
 
     // --- Determine attractors from final snapshot observation counts ---
@@ -305,6 +358,34 @@ fn workerLoop(
                 const k: u8 = @intCast(@min(constants.NUM_CLUSTERS, attractor_synsets.len));
                 attractor_labels = data.kmeansAttractors(attractor_synsets, &anchors, k, page) catch &.{};
                 num_attractors = attractor_synsets.len;
+
+                // Compute navmesh paths (first time + live attractor changes)
+                if (nav_num_paths == 0 or !bootstrapping) {
+                    if (nav_adj) |adj| {
+                        var att_ni: [constants.NUM_ATTRACTORS]u16 = undefined;
+                        for (attractor_synsets, 0..) |aname, ai| {
+                            att_ni[ai] = name_to_idx.get(aname) orelse 0;
+                        }
+                        const path_result = navmesh.computePaths(
+                            adj,
+                            nav_adj_len.?,
+                            nav_local_to_name.?,
+                            nav_name_to_local.?,
+                            att_ni[0..num_attractors],
+                            attractor_labels,
+                            page,
+                        ) catch |err| blk: {
+                            std.debug.print("Worker: computePaths failed: {}\n", .{err});
+                            break :blk null;
+                        };
+                        if (path_result) |pr| {
+                            nav_paths = pr.paths;
+                            nav_num_paths = pr.num_paths;
+                            queue.pushNavPaths(nav_paths, nav_num_paths);
+                            std.debug.print("Worker: computed {d} navmesh paths\n", .{nav_num_paths});
+                        }
+                    }
+                }
             }
         }
 

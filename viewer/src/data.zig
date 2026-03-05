@@ -94,7 +94,7 @@ pub const SnapshotEntry = struct {
 
 // --- Clustering ---
 
-fn cosineSimilarity(a: [constants.ANCHOR_DIM]f32, b: [constants.ANCHOR_DIM]f32) f32 {
+pub fn cosineSimilarity(a: [constants.ANCHOR_DIM]f32, b: [constants.ANCHOR_DIM]f32) f32 {
     var dot: f32 = 0;
     var na: f32 = 0;
     var nb: f32 = 0;
