@@ -40,7 +40,7 @@ pub const Timeline = struct {
     live: bool = true,
     /// Playback mode: replay from current position at speed_idx rate
     playing: bool = false,
-    speed_idx: u8 = 2,
+    speed_idx: u8 = 0,
     /// Latest keyframe wall time (updated on arrival)
     latest_time: f64 = 0,
     /// Earliest keyframe wall time

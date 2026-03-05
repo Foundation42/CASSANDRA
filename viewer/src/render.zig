@@ -101,8 +101,23 @@ fn labelImportance(p: data.Point, max_delta: f32, zoom: f32) f32 {
     if (p.is_attractor) return 10.0; // always above any budget cut
     const activity: f32 = if (max_delta > 0) p.delta / max_delta else 0;
     const spd = std.math.clamp(p.speed / 4.0, 0.0, 1.0);
-    const zoom_reveal = std.math.clamp((zoom - 20.0) / 100.0, 0.0, 1.0);
-    return @max(@max(activity, spd), zoom_reveal) * p.fade;
+    const zoom_reveal = std.math.clamp((zoom - 40.0) / 80.0, 0.0, 1.0);
+    // Blend activity and speed rather than pure max — prevents single-frame spikes
+    // from popping in labels. zoom_reveal still uses max so zooming in always reveals.
+    const motion = activity * 0.7 + spd * 0.3;
+    return @max(motion, zoom_reveal) * p.fade;
+}
+
+/// Label budget scales with zoom: 12 when fully zoomed out, 50 when zoomed in.
+fn labelBudget(zoom: f32) usize {
+    const t = std.math.clamp((zoom - 10.0) / 60.0, 0.0, 1.0); // 0 at zoom<=10, 1 at zoom>=70
+    return @intFromFloat(12.0 + 38.0 * t);
+}
+
+/// Importance threshold: stricter when zoomed out (0.4) to suppress noise, relaxes when zoomed in (0.15).
+fn labelThreshold(zoom: f32) f32 {
+    const t = std.math.clamp((zoom - 10.0) / 60.0, 0.0, 1.0);
+    return 0.4 - 0.25 * t; // 0.4 → 0.15
 }
 
 const LabelSlot = struct { idx: u16, importance: f32 };
@@ -114,6 +129,9 @@ pub fn drawLabels(points: []const data.Point, nd: *const data.NucleusData, cam: 
     const margin: f32 = 50; // small margin so labels near edges still appear
 
     // --- Pass 1: collect top-K non-attractor labels by importance (viewport only) ---
+    const budget = labelBudget(cam.zoom);
+    const imp_threshold = labelThreshold(cam.zoom);
+
     var slots: [MAX_LABELS]LabelSlot = undefined;
     var n_slots: usize = 0;
     var min_imp: f32 = 0;
@@ -130,13 +148,13 @@ pub fn drawLabels(points: []const data.Point, nd: *const data.NucleusData, cam: 
         if (sp.x < -margin or sp.x > sw + margin or sp.y < -margin or sp.y > sh + margin) continue;
 
         const imp = labelImportance(p, max_delta, cam.zoom);
-        if (imp < 0.15) continue;
+        if (imp < imp_threshold) continue;
 
-        if (n_slots < MAX_LABELS) {
+        if (n_slots < budget) {
             slots[n_slots] = .{ .idx = vi, .importance = imp };
             n_slots += 1;
             // Recompute min when buffer fills
-            if (n_slots == MAX_LABELS) {
+            if (n_slots == budget) {
                 min_imp = slots[0].importance;
                 min_idx = 0;
                 for (0..n_slots) |j| {
@@ -151,7 +169,7 @@ pub fn drawLabels(points: []const data.Point, nd: *const data.NucleusData, cam: 
             // Find new min
             min_imp = slots[0].importance;
             min_idx = 0;
-            for (0..MAX_LABELS) |j| {
+            for (0..budget) |j| {
                 if (slots[j].importance < min_imp) {
                     min_imp = slots[j].importance;
                     min_idx = j;
@@ -161,7 +179,7 @@ pub fn drawLabels(points: []const data.Point, nd: *const data.NucleusData, cam: 
     }
 
     // Find the importance threshold (lowest in the budget) for alpha fade
-    const threshold: f32 = if (n_slots == MAX_LABELS) min_imp else 0.15;
+    const threshold: f32 = if (n_slots == budget) min_imp else imp_threshold;
 
     // --- Pass 2: draw attractor labels (always) + budgeted labels ---
     for (visible) |vi| {

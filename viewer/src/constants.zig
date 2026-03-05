@@ -32,7 +32,7 @@ pub const PALETTE = [8]rl.Color{
 };
 
 /// Wall-clock playback speeds: seconds of timeline per real second
-pub const SPEED_LEVELS = [_]f32{ 10, 30, 60, 300, 600, 1800, 3600 };
+pub const SPEED_LEVELS = [_]f32{ 1, 5, 10, 30, 60, 300, 600, 1800, 3600 };
 
 /// Maximum keyframes kept in viewer memory. Oldest are dropped as new ones arrive.
 pub const MAX_KEYFRAMES: u32 = 100;
