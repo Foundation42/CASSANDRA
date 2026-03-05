@@ -44,9 +44,8 @@ pub const CameraState = struct {
     dragging: bool = false,
     drag_start: rl.Vector2 = .{ .x = 0, .y = 0 },
     selected_point: ?u16 = null,
-    double_clicked: bool = false, // true for one frame on double-click of a point
+    double_clicked: bool = false, // true for one frame on double-click
     last_click_time: f64 = 0,
-    last_click_point: ?u16 = null,
 
     // Animated zoom transition
     anim_active: bool = false,
@@ -143,31 +142,24 @@ pub const CameraState = struct {
                 const hit = hitTest(world_pos, points, self.cam.zoom, frame_bvh, cf);
                 self.selected_point = hit;
 
-                // Double-click detection (same point within 400ms)
+                // Double-click detection (anywhere within 400ms)
                 const now = rl.c.GetTime();
-                if (hit != null and hit.? == (self.last_click_point orelse ~@as(u16, 0)) and now - self.last_click_time < 0.4) {
+                if (now - self.last_click_time < 0.4) {
                     self.double_clicked = true;
-                    self.last_click_point = null;
+                    self.last_click_time = 0;
 
-                    // Animate: zoom in to point, or zoom out if already at max
-                    const pts = points orelse &.{};
-                    if (hit.? < pts.len) {
-                        const p = pts[hit.?];
-                        const target = rl.vec2(p.x, p.y);
-                        if (self.cam.zoom >= MAX_ZOOM * 0.9) {
-                            // Already zoomed in — zoom out to fit
-                            const swf: f32 = @floatFromInt(sw);
-                            const shf: f32 = @floatFromInt(sh);
-                            const m: f32 = 0.9;
-                            const fit_zoom = @min((swf * m) / self.bounds.width(), (shf * m) / self.bounds.height());
-                            self.startAnim(fit_zoom, self.bounds.center());
-                        } else {
-                            self.startAnim(MAX_ZOOM, target);
-                        }
+                    // Animate: zoom in to cursor position, or zoom out if already at max
+                    if (self.cam.zoom >= MAX_ZOOM * 0.9) {
+                        const swf: f32 = @floatFromInt(sw);
+                        const shf: f32 = @floatFromInt(sh);
+                        const m: f32 = 0.9;
+                        const fit_zoom = @min((swf * m) / self.bounds.width(), (shf * m) / self.bounds.height());
+                        self.startAnim(fit_zoom, self.bounds.center());
+                    } else {
+                        self.startAnim(MAX_ZOOM, world_pos);
                     }
                 } else {
                     self.last_click_time = now;
-                    self.last_click_point = hit;
                 }
 
                 // Left-click on empty space starts a drag
