@@ -30,7 +30,7 @@ import feedparser
 
 from hourly import (
     FEEDS, GLOVE_PATH, MODEL_STATE_PATH,
-    feed_texts, load_or_compute_positions, load_recency, update_recency,
+    feed_texts, load_or_compute_positions,
 )
 from db import get_connection, ensure_schema, save_snapshot as db_save_snapshot
 from prototype import WordNetNucleusModel
@@ -59,29 +59,24 @@ def fetch_one_feed(name, url):
     return headlines
 
 
-def save_cycle(model, recency, delta):
-    """Save model state, snapshot, delta, and positions. Returns timestamp."""
+def save_cycle(model, delta):
+    """Save model state, snapshot, and positions. Returns timestamp."""
     timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-
-    # Recency
-    recency = update_recency(recency, delta)
 
     # Model state
     tmp_model = str(MODEL_STATE_PATH) + '.tmp'
     model.save(tmp_model)
     os.rename(tmp_model, MODEL_STATE_PATH)
 
-    # Snapshot + positions
+    # Snapshot + positions → SQLite
     snapshot = model.snapshot()
-    positions = load_or_compute_positions(model)
-
-    # Write to SQLite
     db_conn = get_connection()
     ensure_schema(db_conn)
+    positions = load_or_compute_positions(model, db_conn)
     db_save_snapshot(db_conn, snapshot, delta, positions, timestamp)
     db_conn.close()
 
-    return recency, timestamp
+    return timestamp
 
 
 def main():
@@ -104,7 +99,6 @@ def main():
     else:
         print("  No existing model state — starting fresh from RSS only")
 
-    recency = load_recency()
     n_feeds = len(FEEDS)
     print(f"Live ingest: {n_feeds} feeds, batch={args.batch}, interval={args.interval}s. Ctrl-C to stop.\n")
 
@@ -129,7 +123,7 @@ def main():
             total = sum(delta.values())
 
             if delta:
-                recency, ts = save_cycle(model, recency, delta)
+                ts = save_cycle(model, delta)
 
                 top = sorted(delta.items(), key=lambda x: x[1], reverse=True)[:3]
                 names = ', '.join(f"{n}({c})" for n, c in top)

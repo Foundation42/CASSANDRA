@@ -116,7 +116,8 @@ fn workerLoop(
     defer database.close();
     std.debug.print("Worker: opened nucleus.db\n", .{});
 
-    // --- Load all nuclei (anchors + name_to_idx) ---
+    // --- Load all nuclei (anchors + name_to_idx + display words) ---
+    var synset_to_word = std.StringHashMap([]const u8).init(page);
     {
         var nuclei_list = database.getAllNuclei(page) catch {
             std.debug.print("Worker: failed to load nuclei\n", .{});
@@ -132,6 +133,7 @@ fn workerLoop(
                 name_to_idx.put(row.synset, next_idx) catch {};
                 next_idx += 1;
             }
+            synset_to_word.put(row.synset, row.word) catch {};
         }
         nuclei_list.deinit();
     }
@@ -243,8 +245,9 @@ fn workerLoop(
                     next_idx += 1;
                 }
 
+                const word = synset_to_word.get(synset_raw) orelse synset;
                 snapshot_map.put(synset, .{
-                    .word = synset, // word not stored in observations; we look it up
+                    .word = word,
                     .update_count = update_count,
                     .exemplar_count = exemplar_count,
                     .uncertainty = uncertainty,
@@ -328,8 +331,7 @@ fn workerLoop(
         while (nm_it.next()) |entry| {
             if (entry.value_ptr.* >= last_reported_idx) {
                 const synset_copy = alloc.dupe(u8, entry.key_ptr.*) catch continue;
-                // Look up word from nuclei — for now use synset as fallback
-                const word = if (snapshot_map.get(entry.key_ptr.*)) |se| se.word else entry.key_ptr.*;
+                const word = synset_to_word.get(entry.key_ptr.*) orelse entry.key_ptr.*;
                 const word_copy = alloc.dupe(u8, word) catch continue;
                 new_names.append(.{
                     .synset = synset_copy,

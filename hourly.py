@@ -6,17 +6,13 @@ Each run:
   1. Loads (or creates) model state
   2. Fetches fresh RSS headlines
   3. Feeds them through the model
-  4. Saves a timestamped snapshot + delta
-  5. Updates recency map and positions
+  4. Saves snapshot to SQLite + computes positions for new nuclei
 
-Rendering is handled separately by render.py.
-
-Run via cron:  0 * * * * cd /home/chrisbe/dev/wordnets && .venv/bin/python hourly.py
+Run via systemd timer or cron.
 """
 
 import os
 import re
-import json
 import numpy as np
 import feedparser
 from datetime import datetime, timezone
@@ -25,14 +21,17 @@ from pathlib import Path
 from sklearn.manifold import TSNE
 
 from prototype import WordNetNucleusModel
-from db import get_connection, ensure_schema, save_snapshot as db_save_snapshot
+from db import (
+    get_connection, ensure_schema,
+    save_snapshot as db_save_snapshot,
+    load_positions as db_load_positions,
+    save_positions as db_save_positions,
+)
 
 BASE_DIR = Path(__file__).parent
 GLOVE_PATH = BASE_DIR / 'data' / 'glove.6B.50d.txt'
 DB_PATH = Path.home() / 'dev' / 'CASSANDRA' / 'data' / 'cassandra.duckdb'
 MODEL_STATE_PATH = BASE_DIR / 'model_state.pkl'
-POSITIONS_PATH = BASE_DIR / 'nucleus_positions.json'
-SNAPSHOTS_DIR = BASE_DIR / 'snapshots'
 
 STOPWORDS = {
     'the', 'and', 'for', 'that', 'this', 'with', 'from', 'are', 'was',
@@ -144,86 +143,34 @@ def compute_positions(model, top_n=200):
     return positions
 
 
-def load_or_compute_positions(model):
-    """Load saved positions or compute new ones."""
-    if POSITIONS_PATH.exists():
-        with open(POSITIONS_PATH) as f:
-            positions = json.load(f)
-        # Add positions for any new active nuclei not yet positioned
-        active = [(name, n.update_count) for name, n in model.nuclei.items()
-                  if n.update_count > 5 and name not in positions]
-        if active:
-            # Place new nuclei near their nearest positioned neighbor
-            for name, _ in active:
-                anchor = model.nuclei[name].anchor
-                best_dist = float('inf')
-                best_pos = [0.0, 0.0]
-                for pname, pos in positions.items():
-                    if pname in model.nuclei:
-                        d = 1 - np.dot(anchor, model.nuclei[pname].anchor)
-                        if d < best_dist:
-                            best_dist = d
-                            best_pos = pos
-                # Offset slightly from nearest neighbor
-                jitter = np.random.RandomState(hash(name) % 2**31).randn(2) * 0.3
-                positions[name] = [best_pos[0] + jitter[0], best_pos[1] + jitter[1]]
-            save_positions(positions)
-        return positions
-    else:
+def load_or_compute_positions(model, conn):
+    """Load positions from SQLite, add any new active nuclei."""
+    positions = db_load_positions(conn)
+
+    if not positions:
         print("Computing initial positions (first run)...")
         positions = compute_positions(model, top_n=200)
-        save_positions(positions)
+        db_save_positions(conn, positions)
         return positions
 
-
-def atomic_write_json(path, obj):
-    """Write JSON atomically: write to .tmp, then rename."""
-    tmp = Path(str(path) + '.tmp')
-    with open(tmp, 'w') as f:
-        json.dump(obj, f)
-    os.rename(tmp, path)
-
-
-def save_positions(positions):
-    atomic_write_json(POSITIONS_PATH, positions)
-    print(f"Saved {len(positions)} nucleus positions")
-
-
-RECENCY_PATH = BASE_DIR / 'nucleus_recency.json'
-# How many runs back a nucleus remains visible (fading out over this window)
-FADE_WINDOW = 12  # ~12 hours at hourly runs
-
-
-def load_recency():
-    """Load recency map: nucleus_name -> runs_since_last_active."""
-    if RECENCY_PATH.exists():
-        with open(RECENCY_PATH) as f:
-            return json.load(f)
-    return {}
-
-
-def update_recency(recency, delta):
-    """Age all nuclei by 1 run, reset active ones to 0."""
-    # Age everything
-    for name in list(recency.keys()):
-        recency[name] += 1
-        # Evict nuclei that have been cold too long
-        if recency[name] > FADE_WINDOW * 2:
-            del recency[name]
-    # Reset active nuclei
-    for name in delta:
-        recency[name] = 0
-    atomic_write_json(RECENCY_PATH, recency)
-    return recency
-
-
-def load_previous_snapshot():
-    """Load the most recent snapshot for delta computation."""
-    snaps = sorted(SNAPSHOTS_DIR.glob('snap_*.json'))
-    if not snaps:
-        return None
-    with open(snaps[-1]) as f:
-        return json.load(f)
+    # Add positions for any new active nuclei not yet positioned
+    active = [(name, n.update_count) for name, n in model.nuclei.items()
+              if n.update_count > 5 and name not in positions]
+    if active:
+        for name, _ in active:
+            anchor = model.nuclei[name].anchor
+            best_dist = float('inf')
+            best_pos = [0.0, 0.0]
+            for pname, pos in positions.items():
+                if pname in model.nuclei:
+                    d = 1 - np.dot(anchor, model.nuclei[pname].anchor)
+                    if d < best_dist:
+                        best_dist = d
+                        best_pos = pos
+            jitter = np.random.RandomState(hash(name) % 2**31).randn(2) * 0.3
+            positions[name] = [best_pos[0] + jitter[0], best_pos[1] + jitter[1]]
+        db_save_positions(conn, positions)
+    return positions
 
 
 def main():
@@ -245,11 +192,7 @@ def main():
         feed_texts(model, hist_texts)
         print(f"  Baseline stats: {model.get_stats()}")
 
-    # 2. Load previous snapshot + recency map
-    prev_snapshot = load_previous_snapshot()
-    recency = load_recency()
-
-    # 3. Fetch and feed live headlines
+    # 2. Fetch and feed live headlines
     print("\nFetching live headlines...")
     headlines = fetch_headlines()
     print(f"  Got {len(headlines)} headlines")
@@ -258,33 +201,26 @@ def main():
     total_delta = sum(delta.values())
     print(f"  Processed {total_delta} observations, {len(delta)} nuclei hit")
 
-    # 4. Update recency (age all by 1, reset active to 0)
-    recency = update_recency(recency, delta)
-
-    # 5. Save model state
+    # 3. Save model state
     model.save(str(MODEL_STATE_PATH))
 
-    # 6. Build snapshot
+    # 4. Build snapshot + positions, write to SQLite
     snapshot = model.snapshot()
-
-    # 7. Compute/load positions (needed for renderer)
-    positions = load_or_compute_positions(model)
-
-    # 8. Write to SQLite
     db_conn = get_connection()
     ensure_schema(db_conn)
+    positions = load_or_compute_positions(model, db_conn)
     db_save_snapshot(db_conn, snapshot, delta, positions, timestamp)
     db_conn.close()
     print(f"  SQLite snapshot saved")
 
-    # 9. Summary
+    # 5. Summary
     top_hot = sorted(delta.items(), key=lambda x: x[1], reverse=True)[:10]
     print(f"\nTop 10 hottest nuclei this run:")
     for name, count in top_hot:
         word = model.nuclei[name].synset.lemma_names()[0].replace('_', ' ')
         print(f"  {word:<30} {count:>5} hits")
 
-    print(f"\nDone! Render with: python render.py")
+    print(f"\nDone!")
 
 
 if __name__ == '__main__':

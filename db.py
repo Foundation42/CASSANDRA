@@ -80,6 +80,21 @@ def ensure_schema(conn):
     conn.executescript(SCHEMA)
 
 
+def load_positions(conn):
+    """Load all positions from the database."""
+    rows = conn.execute("SELECT synset, x, y FROM positions").fetchall()
+    return {synset: [x, y] for synset, x, y in rows}
+
+
+def save_positions(conn, positions):
+    """Write positions to the database (upsert)."""
+    conn.executemany(
+        "INSERT OR REPLACE INTO positions (synset, x, y) VALUES (?, ?, ?)",
+        [(synset, pos[0], pos[1]) for synset, pos in positions.items()]
+    )
+    conn.commit()
+
+
 def save_snapshot(conn, snapshot, delta, positions, timestamp):
     """Write a single snapshot + observations + positions to the database.
 
