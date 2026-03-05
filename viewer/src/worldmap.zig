@@ -1,5 +1,6 @@
 const std = @import("std");
 const rl = @import("rl.zig");
+const camera = @import("camera.zig");
 
 const LAND_COLOR = rl.color(18, 18, 30, 255);
 const BORDER_COLOR = rl.color(40, 60, 90, 160);
@@ -29,6 +30,7 @@ pub const WorldMap = struct {
     regions: []Region,
     buf: []align(4) u8,
     selected: ?usize = null, // index into regions
+    last_click_time: f64 = 0,
 
     pub fn load(allocator: std.mem.Allocator, path: []const u8) !WorldMap {
         const file = std.fs.cwd().openFile(path, .{}) catch |err| {
@@ -106,24 +108,51 @@ pub const WorldMap = struct {
         return .{ .regions = regions, .buf = buf };
     }
 
-    /// Handle shift-click: hit-test regions and toggle selection.
-    pub fn handleInput(self: *WorldMap, cam: rl.Camera2D) void {
-        if (rl.isMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and rl.isKeyDown(rl.KEY_LEFT_SHIFT)) {
-            const mouse = rl.getScreenToWorld2D(rl.getMousePosition(), cam);
-            const hit = self.hitTest(mouse.x, mouse.y);
+    /// Handle double-click on regions: hit-test and animated zoom to region bounds.
+    /// Called before camera.update so it can pre-empt the normal double-click zoom.
+    pub fn handleInput(self: *WorldMap, cam_state: *camera.CameraState, sw: c_int, sh: c_int) void {
+        if (!rl.isMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) return;
+
+        const mouse = rl.getScreenToWorld2D(rl.getMousePosition(), cam_state.cam);
+        const hit = self.hitTest(mouse.x, mouse.y);
+
+        // Double-click detection
+        const now = rl.c.GetTime();
+        if (now - self.last_click_time < 0.4) {
+            self.last_click_time = 0;
             if (hit) |idx| {
-                if (self.selected) |cur| {
-                    self.selected = if (cur == idx) null else idx;
-                } else {
-                    self.selected = idx;
-                }
-                if (self.selected) |sel| {
-                    std.debug.print("worldmap: selected {s}\n", .{self.regions[sel].name});
-                }
-            } else {
-                self.selected = null;
+                self.selected = idx;
+                // Zoom to region bounds
+                const b = self.regionBounds(idx);
+                const swf: f32 = @floatFromInt(sw);
+                const shf: f32 = @floatFromInt(sh);
+                const margin: f32 = 0.65;
+                const zoom_x = (swf * margin) / @max(b.width(), 0.5);
+                const zoom_y = (shf * margin) / @max(b.height(), 0.5);
+                const target_zoom = @min(@min(zoom_x, zoom_y), 80.0);
+                const c = self.regions[idx].centroid;
+                cam_state.startAnim(target_zoom, rl.vec2(c[0], c[1]));
             }
+        } else {
+            self.last_click_time = now;
         }
+    }
+
+    fn regionBounds(self: *const WorldMap, idx: usize) camera.Bounds {
+        const region = self.regions[idx];
+        var b = camera.Bounds{
+            .min_x = std.math.floatMax(f32),
+            .max_x = -std.math.floatMax(f32),
+            .min_y = std.math.floatMax(f32),
+            .max_y = -std.math.floatMax(f32),
+        };
+        for (region.polygons) |poly| {
+            b.min_x = @min(b.min_x, poly.min_x);
+            b.max_x = @max(b.max_x, poly.max_x);
+            b.min_y = @min(b.min_y, poly.min_y);
+            b.max_y = @max(b.max_y, poly.max_y);
+        }
+        return b;
     }
 
     pub fn draw(self: *const WorldMap, cam: rl.Camera2D, sw: c_int, sh: c_int) void {

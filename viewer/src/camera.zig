@@ -82,7 +82,7 @@ pub const CameraState = struct {
     const MIN_ZOOM: f32 = 2.0;
     const ANIM_DURATION: f32 = 1.0; // seconds
 
-    fn startAnim(self: *CameraState, to_zoom: f32, to_target: rl.Vector2) void {
+    pub fn startAnim(self: *CameraState, to_zoom: f32, to_target: rl.Vector2) void {
         self.anim_from_zoom = self.cam.zoom;
         self.anim_to_zoom = to_zoom;
         self.anim_from_target = self.cam.target;
@@ -149,7 +149,10 @@ pub const CameraState = struct {
                     self.last_click_time = 0;
 
                     // Animate: zoom in to cursor position, or zoom out if already at max
-                    if (self.cam.zoom >= MAX_ZOOM * 0.9) {
+                    // Skip if another system (e.g. worldmap) already started an animation this frame
+                    if (self.anim_active and self.anim_progress < 0.05) {
+                        // Animation already queued this frame, don't override
+                    } else if (self.cam.zoom >= MAX_ZOOM * 0.9) {
                         const swf: f32 = @floatFromInt(sw);
                         const shf: f32 = @floatFromInt(sh);
                         const m: f32 = 0.9;
