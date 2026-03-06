@@ -301,6 +301,129 @@ pub const WorldMap = struct {
             .{ .alias = "washington", .canonical = "united states of america" },
             .{ .alias = "white house", .canonical = "united states of america" },
             .{ .alias = "wyoming", .canonical = "united states of america" },
+            .{ .alias = "united states government", .canonical = "united states of america" },
+            .{ .alias = "federal", .canonical = "united states of america" },
+            .{ .alias = "department of defense", .canonical = "united states of america" },
+            .{ .alias = "department of energy", .canonical = "united states of america" },
+            .{ .alias = "department of state", .canonical = "united states of america" },
+            .{ .alias = "department of justice", .canonical = "united states of america" },
+            .{ .alias = "department of commerce", .canonical = "united states of america" },
+            .{ .alias = "federal reserve", .canonical = "united states of america" },
+            .{ .alias = "supreme court", .canonical = "united states of america" },
+            .{ .alias = "cia", .canonical = "united states of america" },
+            .{ .alias = "fbi", .canonical = "united states of america" },
+            .{ .alias = "nasa", .canonical = "united states of america" },
+            .{ .alias = "medicare", .canonical = "united states of america" },
+            .{ .alias = "medicaid", .canonical = "united states of america" },
+            .{ .alias = "social security", .canonical = "united states of america" },
+            .{ .alias = "wall street", .canonical = "united states of america" },
+            .{ .alias = "silicon valley", .canonical = "united states of america" },
+            .{ .alias = "atlanta", .canonical = "united states of america" },
+            .{ .alias = "miami", .canonical = "united states of america" },
+            .{ .alias = "san francisco", .canonical = "united states of america" },
+            .{ .alias = "phoenix", .canonical = "united states of america" },
+            .{ .alias = "georgia", .canonical = "united states of america" },
+            .{ .alias = "michigan", .canonical = "united states of america" },
+            .{ .alias = "wisconsin", .canonical = "united states of america" },
+            .{ .alias = "pennsylvania", .canonical = "united states of america" },
+            .{ .alias = "iowa", .canonical = "united states of america" },
+            .{ .alias = "tennessee", .canonical = "united states of america" },
+            .{ .alias = "kentucky", .canonical = "united states of america" },
+            .{ .alias = "arkansas", .canonical = "united states of america" },
+            .{ .alias = "alabama", .canonical = "united states of america" },
+            .{ .alias = "president of the united states", .canonical = "united states of america" },
+            .{ .alias = "united states army", .canonical = "united states of america" },
+            .{ .alias = "united states navy", .canonical = "united states of america" },
+            .{ .alias = "united states air force", .canonical = "united states of america" },
+            .{ .alias = "united states marine corps", .canonical = "united states of america" },
+            .{ .alias = "united states congress", .canonical = "united states of america" },
+            .{ .alias = "united states senate", .canonical = "united states of america" },
+            .{ .alias = "united states supreme court", .canonical = "united states of america" },
+            .{ .alias = "american state", .canonical = "united states of america" },
+            .{ .alias = "american city", .canonical = "united states of america" },
+            .{ .alias = "economic commission for asia and the far east", .canonical = "thailand" },
+            .{ .alias = "economic commission for europe", .canonical = "belgium" },
+            // United Kingdom (more)
+            .{ .alias = "parliament", .canonical = "united kingdom" },
+            .{ .alias = "liverpool", .canonical = "united kingdom" },
+            .{ .alias = "birmingham", .canonical = "united kingdom" },
+            // China (more)
+            .{ .alias = "far east", .canonical = "china" },
+            .{ .alias = "hong kong", .canonical = "china" },
+            .{ .alias = "shenzhen", .canonical = "china" },
+            .{ .alias = "guangzhou", .canonical = "china" },
+            .{ .alias = "chinese", .canonical = "china" },
+            // India (more)
+            .{ .alias = "mumbai", .canonical = "india" },
+            .{ .alias = "delhi", .canonical = "india" },
+            .{ .alias = "bangalore", .canonical = "india" },
+            .{ .alias = "kashmir", .canonical = "india" },
+            // Japan (more)
+            .{ .alias = "japanese", .canonical = "japan" },
+            .{ .alias = "osaka", .canonical = "japan" },
+            // France (more)
+            .{ .alias = "french", .canonical = "france" },
+            .{ .alias = "marseille", .canonical = "france" },
+            // Germany (more)
+            .{ .alias = "german", .canonical = "germany" },
+            .{ .alias = "berlin", .canonical = "germany" },
+            .{ .alias = "munich", .canonical = "germany" },
+            .{ .alias = "bundesbank", .canonical = "germany" },
+            // Italy
+            .{ .alias = "italian", .canonical = "italy" },
+            .{ .alias = "rome", .canonical = "italy" },
+            .{ .alias = "milan", .canonical = "italy" },
+            // Spain
+            .{ .alias = "spanish", .canonical = "spain" },
+            .{ .alias = "madrid", .canonical = "spain" },
+            .{ .alias = "barcelona", .canonical = "spain" },
+            // Brazil
+            .{ .alias = "brazilian", .canonical = "brazil" },
+            .{ .alias = "sao paulo", .canonical = "brazil" },
+            .{ .alias = "rio de janeiro", .canonical = "brazil" },
+            // Mexico
+            .{ .alias = "mexican", .canonical = "mexico" },
+            .{ .alias = "mexico city", .canonical = "mexico" },
+            // South Africa
+            .{ .alias = "johannesburg", .canonical = "south africa" },
+            .{ .alias = "cape town", .canonical = "south africa" },
+            // Nigeria
+            .{ .alias = "lagos", .canonical = "nigeria" },
+            // Kenya
+            .{ .alias = "nairobi", .canonical = "kenya" },
+            // Ukraine (more)
+            .{ .alias = "ukrainian", .canonical = "ukraine" },
+            .{ .alias = "kyiv", .canonical = "ukraine" },
+            .{ .alias = "kiev", .canonical = "ukraine" },
+            // Poland
+            .{ .alias = "polish", .canonical = "poland" },
+            .{ .alias = "warsaw", .canonical = "poland" },
+            // North Korea (more)
+            .{ .alias = "korean", .canonical = "north korea" },
+            // Iran (more)
+            .{ .alias = "iranian", .canonical = "iran" },
+            .{ .alias = "persian", .canonical = "iran" },
+            // Afghanistan
+            .{ .alias = "afghan", .canonical = "afghanistan" },
+            .{ .alias = "kabul", .canonical = "afghanistan" },
+            .{ .alias = "taliban", .canonical = "afghanistan" },
+            // Lebanon
+            .{ .alias = "lebanese", .canonical = "lebanon" },
+            .{ .alias = "beirut", .canonical = "lebanon" },
+            .{ .alias = "hezbollah", .canonical = "lebanon" },
+            // Yemen
+            .{ .alias = "yemeni", .canonical = "yemen" },
+            .{ .alias = "houthi", .canonical = "yemen" },
+            // Libya
+            .{ .alias = "libyan", .canonical = "libya" },
+            .{ .alias = "tripoli", .canonical = "libya" },
+            // Sudan
+            .{ .alias = "sudanese", .canonical = "sudan" },
+            .{ .alias = "khartoum", .canonical = "sudan" },
+            // Thailand
+            .{ .alias = "thai", .canonical = "thailand" },
+            .{ .alias = "bangkok", .canonical = "thailand" },
+            .{ .alias = "gulf of thailand", .canonical = "thailand" },
             // Vietnam
             .{ .alias = "hanoi", .canonical = "vietnam" },
         };
