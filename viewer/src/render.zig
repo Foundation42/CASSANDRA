@@ -211,17 +211,24 @@ fn drawOneLabel(p: data.Point, nd: *const data.NucleusData, cam: rl.Camera2D, fo
     const screen_pos = rl.getWorldToScreen2D(rl.vec2(p.x, p.y), cam);
 
     const alpha: u8 = @intFromFloat(@min(255.0, 255.0 * label_alpha));
+    const cc = constants.PALETTE[p.cluster % constants.NUM_CLUSTERS];
     const col = if (p.is_attractor)
-        rl.colorAlpha(constants.HUD_COLOR, alpha)
+        rl.colorAlpha(cc, alpha)
     else if (is_moving_fast) blk: {
+        // Blend from muted cluster color toward bright cluster color with speed
         const v = std.math.clamp((p.speed - 1.0) / 8.0, 0.0, 1.0);
-        const r: u8 = @intFromFloat(80.0 + 175.0 * v);
-        const g: u8 = @intFromFloat(120.0 + 135.0 * v);
-        const b: u8 = 255;
+        const r: u8 = @intFromFloat(@as(f32, @floatFromInt(cc.r)) * (0.4 + 0.6 * v));
+        const g: u8 = @intFromFloat(@as(f32, @floatFromInt(cc.g)) * (0.4 + 0.6 * v));
+        const b: u8 = @intFromFloat(@as(f32, @floatFromInt(cc.b)) * (0.4 + 0.6 * v));
         const va: u8 = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(alpha)) * (0.4 + 0.6 * v)));
         break :blk rl.color(r, g, b, va);
-    } else
-        rl.color(200, 200, 220, alpha);
+    } else blk: {
+        // Desaturated cluster color for quiet labels
+        const r: u8 = @intFromFloat((@as(f32, @floatFromInt(cc.r)) + 200.0) / 2.0);
+        const g: u8 = @intFromFloat((@as(f32, @floatFromInt(cc.g)) + 200.0) / 2.0);
+        const b: u8 = @intFromFloat((@as(f32, @floatFromInt(cc.b)) + 210.0) / 2.0);
+        break :blk rl.color(r, g, b, alpha);
+    };
 
     var buf: [128]u8 = undefined;
     const len = @min(word.len, 127);
