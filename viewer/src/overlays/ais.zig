@@ -6,9 +6,7 @@ const worldmap_mod = @import("../worldmap.zig");
 const MAX_VESSELS: usize = 8192;
 const MAX_LABELS: usize = 200;
 const POLL_INTERVAL_NS: u64 = 60 * std.time.ns_per_s;
-const DOT_COLOR = rl.color(80, 160, 255, 200);
-const LABEL_COLOR = rl.color(80, 160, 255, 140);
-const HEADING_COLOR = rl.color(80, 160, 255, 100);
+const HEADING_ALPHA: u8 = 100;
 
 pub const Vessel = struct {
     x: f32,
@@ -72,18 +70,19 @@ pub const AisOverlay = struct {
     pub fn drawWorld(self: *AisOverlay, _: *const overlay.FrameContext) void {
         for (self.vessels[0..self.count]) |v| {
             const pos = rl.vec2(v.x, v.y);
-            const s: f32 = 0.04;
+            const col = shipTypeColor(v.ship_type);
+            const s: f32 = 0.06;
             rl.drawTriangle(
                 rl.vec2(v.x, v.y - s),
                 rl.vec2(v.x - s * 0.6, v.y + s * 0.5),
                 rl.vec2(v.x + s * 0.6, v.y + s * 0.5),
-                DOT_COLOR,
+                col,
             );
             if (v.course > 0 and v.speed > 0.5) {
                 const rad = (v.course - 90.0) * std.math.pi / 180.0;
                 const len: f32 = 0.075;
                 const end = rl.vec2(v.x + @cos(rad) * len, v.y + @sin(rad) * len);
-                rl.drawLineEx(pos, end, 0.01, HEADING_COLOR);
+                rl.drawLineEx(pos, end, 0.01, rl.colorAlpha(col, HEADING_ALPHA));
             }
         }
     }
@@ -148,10 +147,10 @@ pub const AisOverlay = struct {
             const above = slot.importance - threshold;
             const range: f32 = 0.5;
             const alpha = std.math.clamp(above / (range * 0.3), 0.15, 1.0);
-            const a: u8 = @intFromFloat(alpha * 255.0);
-            const col = rl.color(LABEL_COLOR.r, LABEL_COLOR.g, LABEL_COLOR.b, a);
-
             const v = self.vessels[slot.idx];
+            const base = shipTypeColor(v.ship_type);
+            const a: u8 = @intFromFloat(alpha * @as(f32, @floatFromInt(base.a)));
+            const col = rl.colorAlpha(base, a);
             var label_buf: [21:0]u8 = undefined;
             @memcpy(label_buf[0..v.name_len], v.name[0..v.name_len]);
             label_buf[v.name_len] = 0;
@@ -256,7 +255,7 @@ pub const AisOverlay = struct {
         // Send subscription message
         var sub_buf: [512]u8 = undefined;
         const sub_msg = std.fmt.bufPrint(&sub_buf,
-            \\{{"APIKey":"{s}","BoundingBoxes":[[[-90,-180],[90,180]]],"FilterMessageTypes":["PositionReport"]}}
+            \\{{"APIKey":"{s}","BoundingBoxes":[[[-90,-180],[90,180]]],"FilterMessageTypes":["PositionReport","ShipStaticData"]}}
         , .{key}) catch return;
 
         wsWriteText(&tls, tcp, sub_msg) catch |err| {
@@ -305,7 +304,6 @@ pub const AisOverlay = struct {
         const root = parsed.value;
         if (root != .object) return;
 
-        // Extract metadata for ship name + MMSI
         const meta = root.object.get("MetaData") orelse return;
         if (meta != .object) return;
         const mmsi_val = meta.object.get("MMSI") orelse return;
@@ -314,16 +312,33 @@ pub const AisOverlay = struct {
             else => return,
         };
 
+        const msg_obj = root.object.get("Message") orelse return;
+        if (msg_obj != .object) return;
+
+        // ShipStaticData message (type 5/24): just update ship_type on existing vessel
+        if (msg_obj.object.get("ShipStaticData")) |ssd| {
+            if (ssd == .object) {
+                const st = jsonInt(ssd.object.get("Type"));
+                if (st > 0) {
+                    if (vessel_map.getPtr(mmsi)) |existing| {
+                        existing.ship_type = @intCast(@min(st, 255));
+                    }
+                }
+            }
+            return;
+        }
+
+        // PositionReport: need lat/lon
         const lat: f32 = @floatCast(jsonFloat(meta.object.get("latitude") orelse return));
         const lon: f32 = @floatCast(jsonFloat(meta.object.get("longitude") orelse return));
         if (lat == 0 and lon == 0) return;
 
         const world_pos = worldmap_mod.latLonToWorld(lat, lon);
-        var vessel = Vessel{
-            .x = world_pos[0],
-            .y = world_pos[1],
-            .mmsi = mmsi,
-        };
+
+        // Start from existing vessel data (preserves ship_type from earlier static msg)
+        var vessel = if (vessel_map.get(mmsi)) |existing| existing else Vessel{ .x = world_pos[0], .y = world_pos[1], .mmsi = mmsi };
+        vessel.x = world_pos[0];
+        vessel.y = world_pos[1];
 
         // Ship name from metadata
         if (meta.object.get("ShipName")) |name_val| {
@@ -335,15 +350,11 @@ pub const AisOverlay = struct {
             }
         }
 
-        // COG/SOG from Message.PositionReport
-        if (root.object.get("Message")) |msg_obj| {
-            if (msg_obj == .object) {
-                if (msg_obj.object.get("PositionReport")) |pr| {
-                    if (pr == .object) {
-                        if (pr.object.get("Cog")) |c| vessel.course = @floatCast(jsonFloat(c));
-                        if (pr.object.get("Sog")) |s| vessel.speed = @floatCast(jsonFloat(s));
-                    }
-                }
+        // COG/SOG from PositionReport
+        if (msg_obj.object.get("PositionReport")) |pr| {
+            if (pr == .object) {
+                if (pr.object.get("Cog")) |c| vessel.course = @floatCast(jsonFloat(c));
+                if (pr.object.get("Sog")) |s| vessel.speed = @floatCast(jsonFloat(s));
             }
         }
 
@@ -353,12 +364,16 @@ pub const AisOverlay = struct {
     fn publishFromMap(self: *AisOverlay, vessel_map: *std.AutoHashMap(u32, Vessel)) void {
         var tmp: [MAX_VESSELS]Vessel = undefined;
         var count: usize = 0;
+        var typed: usize = 0;
         var it = vessel_map.valueIterator();
         while (it.next()) |v| {
             if (count >= MAX_VESSELS) break;
             tmp[count] = v.*;
+            if (v.ship_type > 0) typed += 1;
             count += 1;
         }
+
+        std.debug.print("AIS: publishing {d} vessels ({d} with ship_type)\n", .{ count, typed });
 
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -441,6 +456,9 @@ pub const AisOverlay = struct {
                     const p = pv.object;
                     if (p.get("cog")) |c| vessel.course = @floatCast(jsonFloat(c));
                     if (p.get("sog")) |s| vessel.speed = @floatCast(jsonFloat(s));
+                    if (p.get("shipType")) |st| {
+                        if (st == .integer) vessel.ship_type = @intCast(@max(0, @min(255, st.integer)));
+                    }
                     if (p.get("name")) |nv| {
                         if (nv == .string) {
                             const nm = std.mem.trimRight(u8, nv.string, " ");
@@ -465,6 +483,27 @@ pub const AisOverlay = struct {
         std.debug.print("AIS: parsed {d} vessels (Digitraffic)\n", .{count});
     }
 };
+
+/// Ship type color (MarineTraffic convention, ITU AIS type codes):
+///   70-79  Cargo       green
+///   80-89  Tanker      red
+///   60-69  Passenger   blue
+///   30-39  Fishing     orange
+///   50-59  Special     purple  (tugs, pilots, SAR, etc.)
+///   40-49  High-speed  cyan
+///   35-39  Military    gray    (overlap with fishing range; 35 = military in practice)
+///   other  Unknown     white
+fn shipTypeColor(ship_type: u8) rl.Color {
+    return switch (ship_type) {
+        70...79 => rl.color(80, 200, 80, 200), // cargo — green
+        80...89 => rl.color(220, 60, 60, 200), // tanker — red
+        60...69 => rl.color(80, 130, 255, 200), // passenger — blue
+        30...39 => rl.color(255, 160, 40, 200), // fishing — orange
+        50...59 => rl.color(180, 100, 255, 200), // special craft — purple
+        40...49 => rl.color(0, 220, 220, 200), // high-speed craft — cyan
+        else => rl.color(160, 180, 200, 180), // unknown — muted white
+    };
+}
 
 /// Vessel importance: speed-based (fast movers more visible) + zoom reveal.
 fn vesselImportance(v: Vessel, zoom: f32) f32 {
@@ -646,6 +685,15 @@ fn jsonFloat(val: std.json.Value) f64 {
     return switch (val) {
         .float => val.float,
         .integer => @floatFromInt(val.integer),
+        else => 0,
+    };
+}
+
+fn jsonInt(val: ?std.json.Value) u32 {
+    const v = val orelse return 0;
+    return switch (v) {
+        .integer => @intCast(@max(0, v.integer)),
+        .float => @intFromFloat(@max(0.0, v.float)),
         else => 0,
     };
 }

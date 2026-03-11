@@ -6,9 +6,7 @@ const worldmap_mod = @import("../worldmap.zig");
 const MAX_AIRCRAFT: usize = 8192;
 const MAX_LABELS: usize = 200;
 const POLL_INTERVAL_NS: u64 = 10 * std.time.ns_per_s;
-const DOT_COLOR = rl.color(255, 220, 50, 200); // yellow
-const LABEL_COLOR = rl.color(255, 220, 50, 140);
-const HEADING_COLOR = rl.color(255, 220, 50, 100);
+const HEADING_ALPHA: u8 = 100;
 
 pub const Aircraft = struct {
     x: f32, // world coords
@@ -62,14 +60,15 @@ pub const AdsbOverlay = struct {
         for (self.aircraft[0..self.count]) |ac| {
             if (ac.on_ground) continue;
             const pos = rl.vec2(ac.x, ac.y);
-            rl.drawCircleV(pos, 0.03, DOT_COLOR);
+            const col = altitudeColor(ac.altitude);
+            rl.drawCircleV(pos, 0.05, col);
 
             // Heading indicator
             if (ac.heading != 0) {
                 const rad = (ac.heading - 90.0) * std.math.pi / 180.0;
                 const len: f32 = 0.1;
                 const end = rl.vec2(ac.x + @cos(rad) * len, ac.y + @sin(rad) * len);
-                rl.drawLineEx(pos, end, 0.015, HEADING_COLOR);
+                rl.drawLineEx(pos, end, 0.015, rl.colorAlpha(col, HEADING_ALPHA));
             }
         }
     }
@@ -134,10 +133,10 @@ pub const AdsbOverlay = struct {
             const above = slot.importance - threshold;
             const range: f32 = 0.5;
             const alpha = std.math.clamp(above / (range * 0.3), 0.15, 1.0);
-            const a: u8 = @intFromFloat(alpha * 255.0);
-            const col = rl.color(LABEL_COLOR.r, LABEL_COLOR.g, LABEL_COLOR.b, a);
-
             const ac = self.aircraft[slot.idx];
+            const base = altitudeColor(ac.altitude);
+            const a: u8 = @intFromFloat(alpha * @as(f32, @floatFromInt(base.a)));
+            const col = rl.colorAlpha(base, a);
             var label_buf: [9:0]u8 = undefined;
             @memcpy(label_buf[0..ac.callsign_len], ac.callsign[0..ac.callsign_len]);
             label_buf[ac.callsign_len] = 0;
@@ -158,12 +157,20 @@ pub const AdsbOverlay = struct {
     fn workerLoop(self: *AdsbOverlay) void {
         var client = std.http.Client{ .allocator = std.heap.page_allocator };
         defer client.deinit();
+        var backoff: u64 = POLL_INTERVAL_NS;
 
         while (!self.shutdown.load(.acquire)) {
             self.fetchAndParse(&client);
-            // Sleep in small increments to allow quick shutdown
+            const sleep_ns = if (self.last_fetch_status == .err) blk: {
+                backoff = @min(backoff * 2, 120 * std.time.ns_per_s); // max 2min
+                std.debug.print("ADSB: backing off {d}s\n", .{backoff / std.time.ns_per_s});
+                break :blk backoff;
+            } else blk: {
+                backoff = POLL_INTERVAL_NS; // reset on success
+                break :blk POLL_INTERVAL_NS;
+            };
             var slept: u64 = 0;
-            while (slept < POLL_INTERVAL_NS and !self.shutdown.load(.acquire)) {
+            while (slept < sleep_ns and !self.shutdown.load(.acquire)) {
                 std.time.sleep(500 * std.time.ns_per_ms);
                 slept += 500 * std.time.ns_per_ms;
             }
@@ -174,29 +181,40 @@ pub const AdsbOverlay = struct {
         const url = "https://opensky-network.org/api/states/all";
         const uri = std.Uri.parse(url) catch return;
 
+        std.debug.print("ADSB: fetching...\n", .{});
         var buf: [1024 * 1024 * 4]u8 = undefined; // 4MB buffer
         var req = client.open(.GET, uri, .{
             .server_header_buffer = &buf,
-        }) catch {
+        }) catch |err| {
+            std.debug.print("ADSB: open failed: {}\n", .{err});
             self.last_fetch_status = .err;
             return;
         };
         defer req.deinit();
 
-        req.send() catch {
+        req.send() catch |err| {
+            std.debug.print("ADSB: send failed: {}\n", .{err});
             self.last_fetch_status = .err;
             return;
         };
-        req.finish() catch {
+        req.finish() catch |err| {
+            std.debug.print("ADSB: finish failed: {}\n", .{err});
             self.last_fetch_status = .err;
             return;
         };
-        req.wait() catch {
+        req.wait() catch |err| {
+            std.debug.print("ADSB: wait failed: {}\n", .{err});
             self.last_fetch_status = .err;
             return;
         };
 
+        if (req.response.status == .too_many_requests) {
+            std.debug.print("ADSB: rate limited (429)\n", .{});
+            self.last_fetch_status = .err;
+            return;
+        }
         if (req.response.status != .ok) {
+            std.debug.print("ADSB: HTTP {}\n", .{req.response.status});
             self.last_fetch_status = .err;
             return;
         }
@@ -285,6 +303,35 @@ pub const AdsbOverlay = struct {
         std.debug.print("ADSB: parsed {d} aircraft\n", .{count});
     }
 };
+
+/// Altitude color ramp (FlightRadar24 style):
+///   ground–2km  green      (0, 200, 0)
+///   2km–5km     yellow     (220, 220, 0)
+///   5km–8km     orange     (255, 140, 0)
+///   8km–11km    red        (255, 50, 50)
+///   11km+       purple     (200, 80, 255)
+fn altitudeColor(alt_m: f32) rl.Color {
+    // Guard against NaN / Inf from API data
+    if (!std.math.isFinite(alt_m)) return rl.color(255, 220, 50, 200); // fallback yellow
+
+    // Ramp stops: altitude (meters) → RGB
+    const alts = [_]f32{ 0, 2000, 5000, 8000, 11000 };
+    const rs = [_]f32{ 50, 220, 255, 255, 200 };
+    const gs = [_]f32{ 220, 220, 140, 50, 80 };
+    const bs = [_]f32{ 50, 0, 0, 50, 255 };
+
+    const alt = @max(@min(alt_m, 11000.0), 0.0);
+    var i: usize = 0;
+    while (i < alts.len - 2 and alt > alts[i + 1]) : (i += 1) {}
+    const span = alts[i + 1] - alts[i];
+    const t = if (span > 0) @max(@min((alt - alts[i]) / span, 1.0), 0.0) else 0.0;
+    return rl.color(
+        @intFromFloat(@max(@min(rs[i] + (rs[i + 1] - rs[i]) * t, 255.0), 0.0)),
+        @intFromFloat(@max(@min(gs[i] + (gs[i + 1] - gs[i]) * t, 255.0), 0.0)),
+        @intFromFloat(@max(@min(bs[i] + (bs[i + 1] - bs[i]) * t, 255.0), 0.0)),
+        200,
+    );
+}
 
 /// Aircraft importance: altitude-based (high-altitude = more visible) + zoom reveal.
 fn acImportance(ac: Aircraft, zoom: f32) f32 {
