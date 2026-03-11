@@ -165,11 +165,9 @@ pub const CameraState = struct {
                     self.last_click_time = now;
                 }
 
-                // Left-click on empty space starts a drag
-                if (hit == null) {
-                    self.dragging = true;
-                    self.drag_start = mouse_pos;
-                }
+                // Left-click always starts a drag (selecting a point doesn't block panning)
+                self.dragging = true;
+                self.drag_start = mouse_pos;
             }
         }
         if (rl.isMouseButtonReleased(rl.MOUSE_BUTTON_RIGHT) or rl.isMouseButtonReleased(rl.MOUSE_BUTTON_LEFT)) {
