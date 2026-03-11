@@ -165,6 +165,86 @@ pub const AisOverlay = struct {
         return tag.len;
     }
 
+    pub fn hitTest(self: *const AisOverlay, world_pos: rl.Vector2, max_dist_sq: f32) ?overlay.OverlayItemHit {
+        var best_dist: f32 = max_dist_sq;
+        var best_idx: ?u16 = null;
+        for (self.vessels[0..self.count], 0..) |v, i| {
+            const dx = world_pos.x - v.x;
+            const dy = world_pos.y - v.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < best_dist) {
+                best_dist = d2;
+                best_idx = @intCast(i);
+            }
+        }
+        if (best_idx) |idx| {
+            return .{ .item_idx = idx, .dist_sq = best_dist };
+        }
+        return null;
+    }
+
+    pub fn drawDetail(self: *const AisOverlay, fctx: *const overlay.FrameContext, item_idx: u16) void {
+        if (item_idx >= self.count) return;
+        const v = self.vessels[item_idx];
+        const font = fctx.font;
+
+        const panel_w: f32 = 260;
+        const panel_h: f32 = 200;
+        const panel_x: f32 = @as(f32, @floatFromInt(fctx.sw)) - panel_w - 10;
+        const panel_y: f32 = 50;
+
+        rl.drawRectangleRounded(.{
+            .x = panel_x,
+            .y = panel_y,
+            .width = panel_w,
+            .height = panel_h,
+        }, 0.05, 8, rl.color(10, 12, 18, 220));
+
+        const x = panel_x + 12;
+        var y: f32 = panel_y + 12;
+        const sz: f32 = 14;
+
+        // Title: vessel name in ship type color
+        const col = shipTypeColor(v.ship_type);
+        if (v.name_len > 0) {
+            var name_buf: [21:0]u8 = undefined;
+            @memcpy(name_buf[0..v.name_len], v.name[0..v.name_len]);
+            name_buf[v.name_len] = 0;
+            rl.drawTextEx(font, &name_buf, rl.vec2(x, y), 18, 1.0, col);
+        } else {
+            rl.drawTextEx(font, "UNKNOWN VESSEL", rl.vec2(x, y), 18, 1.0, col);
+        }
+        y += 24;
+
+        var buf: [64]u8 = undefined;
+
+        // MMSI
+        printZ(&buf, "MMSI: {d}", .{v.mmsi});
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), 12, 1.0, rl.color(120, 140, 160, 200));
+        y += 18;
+
+        // Ship type
+        const type_name = shipTypeName(v.ship_type);
+        printZ(&buf, "Type: {s}", .{type_name});
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), sz, 1.0, rl.color(180, 190, 200, 220));
+        y += sz + 4;
+
+        // Speed
+        printZ(&buf, "Speed: {d:.1} kt", .{v.speed});
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), sz, 1.0, rl.color(180, 190, 200, 220));
+        y += sz + 4;
+
+        // Course
+        printZ(&buf, "Course: {d:.0}\xc2\xb0", .{v.course});
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), sz, 1.0, rl.color(180, 190, 200, 220));
+        y += sz + 4;
+
+        // Lat/Lon
+        const ll = worldmap_mod.worldToLatLon(v.x, v.y);
+        printZ(&buf, "Pos: {d:.3}, {d:.3}", .{ ll[0], ll[1] });
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), sz, 1.0, rl.color(180, 190, 200, 220));
+    }
+
     fn workerLoop(self: *AisOverlay) void {
         switch (self.source) {
             .aisstream => self.runAisstream(),
@@ -503,6 +583,30 @@ fn shipTypeColor(ship_type: u8) rl.Color {
         40...49 => rl.color(0, 220, 220, 200), // high-speed craft — cyan
         else => rl.color(160, 180, 200, 180), // unknown — muted white
     };
+}
+
+/// Human-readable ship type name from AIS type code.
+fn shipTypeName(ship_type: u8) []const u8 {
+    return switch (ship_type) {
+        70...79 => "Cargo",
+        80...89 => "Tanker",
+        60...69 => "Passenger",
+        30...39 => "Fishing",
+        50...59 => "Special Craft",
+        40...49 => "High-Speed Craft",
+        else => "Unknown",
+    };
+}
+
+fn printZ(buf: []u8, comptime fmt: []const u8, args: anytype) void {
+    const result = std.fmt.bufPrint(buf, fmt, args) catch {
+        buf[0] = '?';
+        buf[1] = 0;
+        return;
+    };
+    if (result.len < buf.len) {
+        buf[result.len] = 0;
+    }
 }
 
 /// Vessel importance: speed-based (fast movers more visible) + zoom reveal.

@@ -40,6 +40,11 @@ pub fn latLonToWorld(lat: f32, lon: f32) [2]f32 {
     return .{ lon * GEO_SCALE, -lat * GEO_SCALE };
 }
 
+/// Inverse of latLonToWorld: convert world-space coordinates back to (lat, lon) degrees.
+pub fn worldToLatLon(x: f32, y: f32) [2]f32 {
+    return .{ -y / GEO_SCALE, x / GEO_SCALE };
+}
+
 pub const WorldMap = struct {
     regions: []Region,
     buf: []align(4) u8,

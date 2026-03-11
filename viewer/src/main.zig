@@ -109,6 +109,8 @@ pub fn main() !void {
         ais: ais.AisOverlay = .{},
     }).init();
 
+    var selection: overlay_mod.Selection = .none;
+
     // Render performance timers
     var perf = perf_mod.PerfTimers{};
 
@@ -242,6 +244,7 @@ pub fn main() !void {
             }
             if (rl.isKeyPressed(rl.KEY_ESCAPE)) {
                 navmesh_focus = null;
+                selection = .none;
             }
             if (rl.isKeyPressed(rl.KEY_E)) {
                 edges_on = !edges_on;
@@ -378,6 +381,64 @@ pub fn main() !void {
         const visible = visible_buf[0..n_visible];
 
         cam_state.update(render_points, sw, sh, &frame_bvh, &cluster_filter);
+
+        // Unified click routing: test overlay hits alongside concept hits
+        if (rl.isMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
+            const mouse_pos = rl.getMousePosition();
+            if (mouse_pos.y < @as(f32, @floatFromInt(sh)) - 50) {
+                const world_pos = rl.getScreenToWorld2D(mouse_pos, cam_state.cam);
+                const overlay_hit = overlays.hitTest(world_pos, cam_state.cam.zoom);
+
+                if (cam_state.selected_point) |concept_idx| {
+                    // Camera found a concept point — compare with overlay hit
+                    if (overlay_hit) |oh| {
+                        // Compute concept dist_sq
+                        const cp = render_points[concept_idx];
+                        const cdx = world_pos.x - cp.x;
+                        const cdy = world_pos.y - cp.y;
+                        const concept_dist = cdx * cdx + cdy * cdy;
+                        if (oh.dist_sq < concept_dist) {
+                            // Overlay is closer
+                            selection = .{ .overlay = oh };
+                            cam_state.selected_point = null;
+                        } else {
+                            selection = .{ .concept = concept_idx };
+                        }
+                    } else {
+                        selection = .{ .concept = concept_idx };
+                    }
+                } else {
+                    // No concept hit
+                    if (overlay_hit) |oh| {
+                        selection = .{ .overlay = oh };
+                    } else {
+                        selection = .none;
+                    }
+                }
+            }
+        }
+        // Keep cam_state.selected_point synced with selection for highlight ring
+        // Also detect when camera cleared selection (ESC/HOME) and propagate
+        if (cam_state.selected_point == null) {
+            switch (selection) {
+                .concept => selection = .none,
+                else => {},
+            }
+        }
+        switch (selection) {
+            .concept => |idx| cam_state.selected_point = idx,
+            .overlay => cam_state.selected_point = null,
+            .none => {},
+        }
+        // Clear overlay selection if its overlay was toggled off
+        switch (selection) {
+            .overlay => |hit| {
+                if (!overlays.isEnabled(hit.overlay_idx)) {
+                    selection = .none;
+                }
+            },
+            else => {},
+        }
 
         // Update navmesh focus on click: clicking an attractor focuses paths from it
         if (navmesh_on and rl.isMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
@@ -528,8 +589,10 @@ pub fn main() !void {
         ui.drawClusterFilter(&cluster_filter, sw);
         ui.drawSearchBar(&search, font, sw);
 
-        if (cam_state.selected_point) |sel| {
-            ui.drawDetailPanel(render_points, sel, &nd, font, sw);
+        switch (selection) {
+            .concept => |idx| ui.drawDetailPanel(render_points, idx, &nd, font, sw),
+            .overlay => |hit| overlays.drawDetail(&fctx, hit),
+            .none => {},
         }
 
         // Effects status indicator

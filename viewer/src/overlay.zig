@@ -4,6 +4,10 @@ const rl = @import("rl.zig");
 const ui = @import("ui.zig");
 const worldmap_mod = @import("worldmap.zig");
 
+pub const OverlayItemHit = struct { item_idx: u16, dist_sq: f32 };
+pub const OverlayHit = struct { overlay_idx: u8, item_idx: u16, dist_sq: f32 };
+pub const Selection = union(enum) { none, concept: u16, overlay: OverlayHit };
+
 /// Context passed to every overlay callback each frame.
 pub const FrameContext = struct {
     render_points: []const data.Point,
@@ -91,6 +95,57 @@ pub fn OverlaySet(comptime T: type) type {
                     }
                 }
             }
+        }
+
+        /// Test all enabled overlays for a hit, return the closest.
+        pub fn hitTest(self: *Self, world_pos: rl.Vector2, cam_zoom: f32) ?OverlayHit {
+            var best: ?OverlayHit = null;
+            const max_dist_sq = blk: {
+                const r = 15.0 / cam_zoom;
+                break :blk r * r;
+            };
+            inline for (std.meta.fields(T), 0..) |field, oi| {
+                const o = &@field(self.overlays, field.name);
+                if (o.enabled()) {
+                    if (@hasDecl(field.type, "hitTest")) {
+                        if (o.hitTest(world_pos, max_dist_sq)) |item_hit| {
+                            const candidate = OverlayHit{
+                                .overlay_idx = @intCast(oi),
+                                .item_idx = item_hit.item_idx,
+                                .dist_sq = item_hit.dist_sq,
+                            };
+                            if (best) |b| {
+                                if (candidate.dist_sq < b.dist_sq) best = candidate;
+                            } else {
+                                best = candidate;
+                            }
+                        }
+                    }
+                }
+            }
+            return best;
+        }
+
+        /// Dispatch drawDetail to the overlay that owns the hit.
+        pub fn drawDetail(self: *Self, fctx: *const FrameContext, hit: OverlayHit) void {
+            inline for (std.meta.fields(T), 0..) |field, oi| {
+                if (oi == hit.overlay_idx) {
+                    const o = &@field(self.overlays, field.name);
+                    if (@hasDecl(field.type, "drawDetail")) {
+                        o.drawDetail(fctx, hit.item_idx);
+                    }
+                }
+            }
+        }
+
+        /// Check if a particular overlay index is currently enabled.
+        pub fn isEnabled(self: *const Self, overlay_idx: u8) bool {
+            inline for (std.meta.fields(T), 0..) |field, oi| {
+                if (oi == overlay_idx) {
+                    return @field(self.overlays, field.name).enabled();
+                }
+            }
+            return false;
         }
 
         pub fn statusText(self: *const Self, buf: []u8) usize {

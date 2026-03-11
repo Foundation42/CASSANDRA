@@ -14,6 +14,8 @@ pub const Aircraft = struct {
     heading: f32 = 0, // degrees, 0 = north
     callsign: [8]u8 = .{0} ** 8,
     callsign_len: u8 = 0,
+    icao: [6]u8 = .{0} ** 6,
+    icao_len: u8 = 0,
     altitude: f32 = 0, // meters
     velocity: f32 = 0, // m/s
     on_ground: bool = false,
@@ -147,11 +149,96 @@ pub const AdsbOverlay = struct {
     pub fn statusText(_: *const AdsbOverlay, buf: []u8) usize {
         const tag = "ADSB";
         if (buf.len < tag.len + 3) return 0;
-        // Prepend separator if there's already content
         var pos: usize = 0;
         @memcpy(buf[pos..][0..tag.len], tag);
         pos += tag.len;
         return pos;
+    }
+
+    pub fn hitTest(self: *const AdsbOverlay, world_pos: rl.Vector2, max_dist_sq: f32) ?overlay.OverlayItemHit {
+        var best_dist: f32 = max_dist_sq;
+        var best_idx: ?u16 = null;
+        for (self.aircraft[0..self.count], 0..) |ac, i| {
+            if (ac.on_ground) continue;
+            const dx = world_pos.x - ac.x;
+            const dy = world_pos.y - ac.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < best_dist) {
+                best_dist = d2;
+                best_idx = @intCast(i);
+            }
+        }
+        if (best_idx) |idx| {
+            return .{ .item_idx = idx, .dist_sq = best_dist };
+        }
+        return null;
+    }
+
+    pub fn drawDetail(self: *const AdsbOverlay, fctx: *const overlay.FrameContext, item_idx: u16) void {
+        if (item_idx >= self.count) return;
+        const ac = self.aircraft[item_idx];
+        const font = fctx.font;
+
+        const panel_w: f32 = 260;
+        const panel_h: f32 = 200;
+        const panel_x: f32 = @as(f32, @floatFromInt(fctx.sw)) - panel_w - 10;
+        const panel_y: f32 = 50;
+
+        rl.drawRectangleRounded(.{
+            .x = panel_x,
+            .y = panel_y,
+            .width = panel_w,
+            .height = panel_h,
+        }, 0.05, 8, rl.color(10, 12, 18, 220));
+
+        const x = panel_x + 12;
+        var y: f32 = panel_y + 12;
+        const sz: f32 = 14;
+
+        // Title: callsign in altitude color
+        const col = altitudeColor(ac.altitude);
+        if (ac.callsign_len > 0) {
+            var name_buf: [9:0]u8 = undefined;
+            @memcpy(name_buf[0..ac.callsign_len], ac.callsign[0..ac.callsign_len]);
+            name_buf[ac.callsign_len] = 0;
+            rl.drawTextEx(font, &name_buf, rl.vec2(x, y), 18, 1.0, col);
+        } else {
+            rl.drawTextEx(font, "UNKNOWN", rl.vec2(x, y), 18, 1.0, col);
+        }
+        y += 24;
+
+        // ICAO
+        if (ac.icao_len > 0) {
+            var icao_buf: [7:0]u8 = undefined;
+            @memcpy(icao_buf[0..ac.icao_len], ac.icao[0..ac.icao_len]);
+            icao_buf[ac.icao_len] = 0;
+            rl.drawTextEx(font, &icao_buf, rl.vec2(x, y), 12, 1.0, rl.color(120, 140, 160, 200));
+            y += 18;
+        }
+
+        var buf: [64]u8 = undefined;
+
+        // Altitude
+        const alt_ft = ac.altitude * 3.28084;
+        printZ(&buf, "Alt: {d:.0}m ({d:.0}ft)", .{ ac.altitude, alt_ft });
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), sz, 1.0, rl.color(180, 190, 200, 220));
+        y += sz + 4;
+
+        // Speed
+        const spd_kt = ac.velocity * 1.94384;
+        printZ(&buf, "Speed: {d:.0}m/s ({d:.0}kt)", .{ ac.velocity, spd_kt });
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), sz, 1.0, rl.color(180, 190, 200, 220));
+        y += sz + 4;
+
+        // Heading
+        printZ(&buf, "Heading: {d:.0}\xc2\xb0", .{ac.heading});
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), sz, 1.0, rl.color(180, 190, 200, 220));
+        y += sz + 4;
+
+        // Lat/Lon
+        const ll = worldmap_mod.worldToLatLon(ac.x, ac.y);
+        printZ(&buf, "Pos: {d:.3}, {d:.3}", .{ ll[0], ll[1] });
+        rl.drawTextEx(font, @ptrCast(&buf), rl.vec2(x, y), sz, 1.0, rl.color(180, 190, 200, 220));
     }
 
     fn workerLoop(self: *AdsbOverlay) void {
@@ -268,6 +355,14 @@ pub const AdsbOverlay = struct {
                 .y = world_pos[1],
             };
 
+            // icao24 (index 0)
+            if (state[0] == .string) {
+                const icao = state[0].string;
+                const icao_len = @min(icao.len, 6);
+                @memcpy(ac.icao[0..icao_len], icao[0..icao_len]);
+                ac.icao_len = @intCast(icao_len);
+            }
+
             // callsign (index 1)
             if (state[1] == .string) {
                 const cs = state[1].string;
@@ -353,6 +448,17 @@ fn acLabelBudget(zoom: f32) usize {
 fn acLabelThreshold(zoom: f32) f32 {
     const t = std.math.clamp((zoom - 30.0) / 100.0, 0.0, 1.0);
     return 0.5 - 0.5 * t;
+}
+
+fn printZ(buf: []u8, comptime fmt: []const u8, args: anytype) void {
+    const result = std.fmt.bufPrint(buf, fmt, args) catch {
+        buf[0] = '?';
+        buf[1] = 0;
+        return;
+    };
+    if (result.len < buf.len) {
+        buf[result.len] = 0;
+    }
 }
 
 fn jsonFloat(val: std.json.Value) f64 {
