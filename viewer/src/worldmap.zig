@@ -30,6 +30,16 @@ const Region = struct {
     polygons: []Polygon,
 };
 
+/// Projection scale: lon [-180,180] → [-30,30], lat [-90,90] → [-15,15].
+/// Matches the equirectangular projection used by convert_geo.py.
+const GEO_SCALE: f32 = 30.0 / 180.0;
+
+/// Convert latitude/longitude (degrees) to world-space coordinates.
+/// Same projection as the world.bin data: x = lon * scale, y = -lat * scale.
+pub fn latLonToWorld(lat: f32, lon: f32) [2]f32 {
+    return .{ lon * GEO_SCALE, -lat * GEO_SCALE };
+}
+
 pub const WorldMap = struct {
     regions: []Region,
     buf: []align(4) u8,

@@ -12,12 +12,36 @@ const bvh = @import("bvh.zig");
 const effects = @import("effects.zig");
 const navmesh = @import("navmesh.zig");
 const worldmap_mod = @import("worldmap.zig");
+const overlay_mod = @import("overlay.zig");
+const perf_mod = @import("perf.zig");
+const adsb = @import("overlays/adsb.zig");
+const ais = @import("overlays/ais.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
+    // Parse CLI args
+    var boot_window_secs: i64 = 86400; // default: 24h
+    {
+        var args = std.process.args();
+        _ = args.next(); // skip argv[0]
+        while (args.next()) |arg| {
+            if (std.mem.startsWith(u8, arg, "--window=")) {
+                const val = arg["--window=".len..];
+                boot_window_secs = std.fmt.parseInt(i64, val, 10) catch 86400;
+            } else if (std.mem.eql(u8, arg, "--all")) {
+                boot_window_secs = 0; // load everything
+            }
+        }
+    }
+
     std.debug.print("CASSANDRA Nucleus Viewer\n", .{});
+    if (boot_window_secs > 0) {
+        std.debug.print("Boot window: {d}s ({d}h)\n", .{ boot_window_secs, @divTrunc(boot_window_secs, 3600) });
+    } else {
+        std.debug.print("Boot window: all snapshots\n", .{});
+    }
 
     var nd = data.NucleusData.init(allocator);
 
@@ -27,6 +51,7 @@ pub fn main() !void {
     // --- Spawn worker thread (handles all snapshot loading + live) ---
     var running_recency = std.StringHashMap(i64).init(allocator);
     var nds = live.NdSnapshot.init(&nd, &running_recency);
+    nds.boot_window_secs = boot_window_secs;
     var queue = live.LiveQueue{};
     queue.spawn(&nds);
     defer queue.requestShutdown();
@@ -77,6 +102,15 @@ pub fn main() !void {
     // Post-processing effects (trails + bloom)
     var fx: effects.Effects = .{};
     defer fx.deinit();
+
+    // Overlay plugins
+    var overlays = overlay_mod.OverlaySet(struct {
+        adsb: adsb.AdsbOverlay = .{},
+        ais: ais.AisOverlay = .{},
+    }).init();
+
+    // Render performance timers
+    var perf = perf_mod.PerfTimers{};
 
     while (!rl.windowShouldClose()) {
         const dt = rl.getFrameTime();
@@ -182,6 +216,8 @@ pub fn main() !void {
             rl.toggleFullscreen();
         }
         fx.handleInput();
+        perf.handleInput();
+        overlays.handleToggles();
         if (search.active) {
             search.handleInput();
         } else {
@@ -405,33 +441,73 @@ pub fn main() !void {
         // Update region heat from nucleus activity
         if (wmap) |*m| m.updateHeat(render_points, &nd, cur_kf.max_delta);
 
+        // Build FrameContext for overlays
+        const fctx = overlay_mod.FrameContext{
+            .render_points = render_points,
+            .nd = &nd,
+            .cur_kf = cur_kf,
+            .cam = cam_state.cam,
+            .sw = sw,
+            .sh = sh,
+            .visible = visible,
+            .wmap = if (wmap) |*m| m else null,
+            .cluster_filter = &cluster_filter,
+            .dt = dt,
+            .font = font,
+            .allocator = allocator,
+        };
+
+        // Update overlay state (drain pending data from worker threads)
+        overlays.update(&fctx);
+
         rl.beginMode2D(cam_state.cam);
+
+        perf.lapStart();
         render.drawGrid(cam_state.cam, sw, sh);
+        perf.lapEnd(perf_mod.GRID);
+
+        perf.lapStart();
         if (wmap) |*m| m.draw(cam_state.cam, sw, sh);
+        perf.lapEnd(perf_mod.MAP);
+
+        perf.lapStart();
         if (navmesh_on and nav_num_paths > 0) {
             render.drawNavmesh(render_points, nav_paths[0..nav_num_paths], &cluster_filter, navmesh_focus);
         }
+        perf.lapEnd(perf_mod.NAVMESH);
+
+        perf.lapStart();
         if (edges_on) render.drawConnectionLines(render_points, &cluster_filter, visible);
-        render.drawGlow(render_points, cur_kf.max_delta, &cluster_filter, visible);
         render.drawDots(render_points, cur_kf.max_total, cur_kf.max_delta, &cluster_filter, visible);
         render.drawAttractorRings(render_points, &cluster_filter, visible);
-
         if (cam_state.selected_point) |sel| {
             render.drawHighlight(render_points, sel);
         }
         if (search.len > 0) {
             render.drawSearchHighlights(render_points, &nd, search.query(), visible);
         }
+        perf.lapEnd(perf_mod.DOTS);
+
+        perf.lapStart();
+        render.drawGlow(render_points, cur_kf.max_delta, &cluster_filter, visible);
+        perf.lapEnd(perf_mod.GLOW);
+
+        // Overlay world-space drawing (inside Mode2D)
+        perf.lapStart();
+        overlays.drawWorld(&fctx);
+        perf.lapEnd(perf_mod.OVERLAYS);
+
         rl.endMode2D();
 
         // End scene: composite effects (trails/bloom), then draw overlays on top
+        perf.lapStart();
         if (fx.anyActive()) {
             fx.endScene();
-            // endScene calls beginDrawing internally and composites the scene
         }
+        perf.lapEnd(perf_mod.EFFECTS);
 
         // Labels, vignette, and HUD drawn AFTER effects so they stay crisp
-        // World map labels (very dim, behind nucleus labels)
+        perf.lapStart();
         if (wmap) |*m| {
             rl.beginMode2D(cam_state.cam);
             m.drawLabels(cam_state.cam, font);
@@ -441,6 +517,11 @@ pub fn main() !void {
         if (navmesh_on and navmesh_focus != null) {
             render.drawNavmeshLabels(render_points, &nd, cam_state.cam, font);
         }
+        perf.lapEnd(perf_mod.LABELS);
+
+        // Overlay screen-space drawing
+        overlays.drawScreen(&fctx);
+
         render.drawVignette(sw, sh);
         ui.drawHUD(font, cur_kf.timestamp, cur_kf.num_visible, cur_kf.num_hot, @intCast(keyframes.len), &tl, phys.isActive(), keyframes);
         ui.drawScrubber(&tl, font, sw, sh, keyframes);
@@ -453,9 +534,11 @@ pub fn main() !void {
 
         // Effects status indicator
         {
-            var fx_buf: [64]u8 = undefined;
+            var fx_buf: [128]u8 = undefined;
             var fx_len: usize = 0;
-            if (fx.trails_on or fx.bloom_on or navmesh_on or !edges_on or phys.geo_active) {
+            if (fx.trails_on or fx.bloom_on or navmesh_on or !edges_on or phys.geo_active or
+                overlays.overlays.adsb.active or overlays.overlays.ais.active)
+            {
                 @memcpy(fx_buf[0..4], "FX: ");
                 fx_len = 4;
                 if (fx.trails_on) {
@@ -493,7 +576,6 @@ pub fn main() !void {
                     }
                     @memcpy(fx_buf[fx_len..][0..4], "GEO ");
                     fx_len += 4;
-                    // Format geo_spring_k as e.g. "6.0"
                     const k_int: u32 = @intFromFloat(phys.consts.geo_spring_k);
                     const k_frac: u32 = @intFromFloat((phys.consts.geo_spring_k - @as(f32, @floatFromInt(k_int))) * 10 + 0.5);
                     if (k_int >= 10) {
@@ -507,11 +589,27 @@ pub fn main() !void {
                     fx_buf[fx_len] = '0' + @as(u8, @intCast(k_frac % 10));
                     fx_len += 1;
                 }
+                // Append overlay status text
+                {
+                    var tmp_buf: [32]u8 = undefined;
+                    const overlay_status = overlays.statusText(&tmp_buf);
+                    if (overlay_status > 0) {
+                        if (fx_len > 4) {
+                            @memcpy(fx_buf[fx_len..][0..3], " + ");
+                            fx_len += 3;
+                        }
+                        @memcpy(fx_buf[fx_len..][0..overlay_status], tmp_buf[0..overlay_status]);
+                        fx_len += overlay_status;
+                    }
+                }
                 fx_buf[fx_len] = 0;
                 const text: [*:0]const u8 = @ptrCast(&fx_buf);
                 rl.drawTextEx(font, text, rl.vec2(10, @as(f32, @floatFromInt(sh)) - 30), 10, 1.0, constants.HUD_DIM);
             }
         }
+
+        perf.endFrame();
+        perf.draw(font, sw, sh);
 
         rl.drawFPS(sw - 90, sh - 60);
         rl.endDrawing();

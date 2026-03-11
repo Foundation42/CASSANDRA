@@ -80,6 +80,7 @@ pub const Db = struct {
 
     // Pre-compiled statements
     stmt_snapshots_after: Statement,
+    stmt_snapshots_after_time: Statement,
     stmt_observations: Statement,
     stmt_all_positions: Statement,
 
@@ -95,12 +96,14 @@ pub const Db = struct {
 
         // Prepare reusable statements
         const stmt_sa = try prepareStmt(h, "SELECT id, timestamp, wall_time FROM snapshots WHERE id > ? ORDER BY id");
+        const stmt_sat = try prepareStmt(h, "SELECT id, timestamp, wall_time FROM snapshots WHERE wall_time > ? ORDER BY id");
         const stmt_obs = try prepareStmt(h, "SELECT synset, update_count, exemplar_count, uncertainty, delta FROM observations WHERE snapshot_id = ?");
         const stmt_pos = try prepareStmt(h, "SELECT synset, x, y FROM positions");
 
         return .{
             .handle = h,
             .stmt_snapshots_after = stmt_sa,
+            .stmt_snapshots_after_time = stmt_sat,
             .stmt_observations = stmt_obs,
             .stmt_all_positions = stmt_pos,
         };
@@ -108,6 +111,7 @@ pub const Db = struct {
 
     pub fn close(self: *Db) void {
         self.stmt_snapshots_after.finalize();
+        self.stmt_snapshots_after_time.finalize();
         self.stmt_observations.finalize();
         self.stmt_all_positions.finalize();
         _ = c.sqlite3_close(self.handle);
@@ -155,6 +159,13 @@ pub const Db = struct {
     /// List all snapshot IDs in order (for bootstrap).
     pub fn listSnapshotIds(self: *Db) !Statement {
         return try prepareStmt(self.handle, "SELECT id, timestamp, wall_time FROM snapshots ORDER BY id");
+    }
+
+    /// List snapshot IDs with wall_time after a cutoff (for time-windowed bootstrap).
+    pub fn listSnapshotIdsAfterTime(self: *Db, min_wall_time: i64) *Statement {
+        self.stmt_snapshots_after_time.reset();
+        self.stmt_snapshots_after_time.bindInt(1, min_wall_time);
+        return &self.stmt_snapshots_after_time;
     }
 
     /// Get snapshots with id > last_id (for live polling).

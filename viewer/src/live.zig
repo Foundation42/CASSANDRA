@@ -122,6 +122,8 @@ pub const NdSnapshot = struct {
     next_idx: u16,
     // Worker's running recency: nucleus name → wall-time of last activity (seconds)
     recency: std.StringHashMap(i64),
+    // Boot window: only load snapshots within this many seconds of now (0 = all)
+    boot_window_secs: i64,
 
     pub fn init(nd: *data.NucleusData, initial_recency: *std.StringHashMap(i64)) NdSnapshot {
         return .{
@@ -130,6 +132,7 @@ pub const NdSnapshot = struct {
             .name_to_idx = nd.name_to_idx,
             .next_idx = @intCast(nd.synset_names.items.len),
             .recency = initial_recency.*,
+            .boot_window_secs = 0,
         };
     }
 };
@@ -252,12 +255,23 @@ fn workerLoop(
     var bootstrapping = true;
     var boot_count: u32 = 0;
 
-    // Bootstrap: list all snapshot IDs
-    var boot_stmt = database.listSnapshotIds() catch {
-        std.debug.print("Worker: failed to list snapshots\n", .{});
-        return;
-    };
-    defer boot_stmt.finalize();
+    // Bootstrap: list snapshot IDs (optionally time-windowed)
+    const boot_window = nds.boot_window_secs;
+    var boot_stmt_owned: ?db_mod.Statement = null;
+    var boot_stmt_ptr: *db_mod.Statement = undefined;
+    if (boot_window > 0) {
+        const now = std.time.timestamp();
+        const cutoff = now - boot_window;
+        std.debug.print("Worker: bootstrap window = {d}s, cutoff wall_time > {d}\n", .{ boot_window, cutoff });
+        boot_stmt_ptr = database.listSnapshotIdsAfterTime(cutoff);
+    } else {
+        boot_stmt_owned = database.listSnapshotIds() catch {
+            std.debug.print("Worker: failed to list snapshots\n", .{});
+            return;
+        };
+        boot_stmt_ptr = &boot_stmt_owned.?;
+    }
+    defer if (boot_stmt_owned) |*s| s.finalize();
 
     while (!queue.shutdown.load(.acquire)) {
         // Check for pending navmesh requests from main thread (timeline scrub)
@@ -302,10 +316,10 @@ fn workerLoop(
         var snap_wall_time: i64 = 0;
 
         if (bootstrapping) {
-            if (boot_stmt.step()) {
-                snap_id = boot_stmt.columnInt(0);
-                snap_ts_raw = boot_stmt.columnText(1);
-                snap_wall_time = boot_stmt.columnInt(2);
+            if (boot_stmt_ptr.step()) {
+                snap_id = boot_stmt_ptr.columnInt(0);
+                snap_ts_raw = boot_stmt_ptr.columnText(1);
+                snap_wall_time = boot_stmt_ptr.columnInt(2);
             } else {
                 bootstrapping = false;
                 queue.bootstrap_complete.store(true, .release);
