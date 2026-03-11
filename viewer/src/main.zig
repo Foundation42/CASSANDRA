@@ -63,6 +63,7 @@ pub fn main() !void {
     rl.initWindow(constants.WINDOW_W, constants.WINDOW_H, "CASSANDRA — Nucleus Viewer");
     defer rl.closeWindow();
     rl.setTargetFPS(constants.TARGET_FPS);
+    rl.c.SetExitKey(0); // Disable ESC-to-quit; ESC is used for clearing selection/search
 
     const font = rl.getFontDefault();
 
