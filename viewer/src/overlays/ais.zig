@@ -74,21 +74,22 @@ pub const AisOverlay = struct {
 
     pub fn drawWorld(self: *AisOverlay, _: *const overlay.FrameContext) void {
         for (self.vessels[0..self.count]) |v| {
-            const pos = rl.vec2(v.x, v.y);
             const col = shipTypeColor(v.ship_type);
             const s: f32 = 0.06;
-            rl.drawTriangle(
-                rl.vec2(v.x, v.y - s),
-                rl.vec2(v.x - s * 0.6, v.y + s * 0.5),
-                rl.vec2(v.x + s * 0.6, v.y + s * 0.5),
-                col,
-            );
-            if (v.course > 0 and v.speed > 0.5) {
-                const rad = (v.course - 90.0) * std.math.pi / 180.0;
-                const len: f32 = 0.075;
-                const end = rl.vec2(v.x + @cos(rad) * len, v.y + @sin(rad) * len);
-                rl.drawLineEx(pos, end, 0.01, rl.colorAlpha(col, HEADING_ALPHA));
-            }
+
+            // Rotate triangle to point along course (0° = north, CW)
+            const rad = v.course * std.math.pi / 180.0;
+            const cos_r = @cos(rad);
+            const sin_r = @sin(rad);
+
+            // Triangle verts in local space (tip forward = +Y up = north)
+            // tip: (0, -s), left: (-s*0.6, +s*0.5), right: (+s*0.6, +s*0.5)
+            // Rotate by course: x' = x*cos - y*sin, y' = x*sin + y*cos
+            const tip = rl.vec2(v.x + (0) * cos_r - (-s) * sin_r, v.y + (0) * sin_r + (-s) * cos_r);
+            const left = rl.vec2(v.x + (-s * 0.6) * cos_r - (s * 0.5) * sin_r, v.y + (-s * 0.6) * sin_r + (s * 0.5) * cos_r);
+            const right = rl.vec2(v.x + (s * 0.6) * cos_r - (s * 0.5) * sin_r, v.y + (s * 0.6) * sin_r + (s * 0.5) * cos_r);
+
+            rl.drawTriangle(tip, left, right, col);
         }
     }
 
