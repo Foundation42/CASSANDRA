@@ -72,8 +72,27 @@ pub const AisOverlay = struct {
         }
     }
 
-    pub fn drawWorld(self: *AisOverlay, _: *const overlay.FrameContext) void {
+    pub fn drawWorld(self: *AisOverlay, fctx: *const overlay.FrameContext) void {
+        // World-space grid thinning: stable under panning
+        const cam = fctx.cam;
+        const cell_world: f32 = 12.0 / cam.zoom; // world-space cell size
+        const grid_cols: usize = 320;
+        const grid_rows: usize = 180;
+        var grid: [grid_cols * grid_rows]bool = undefined;
+        @memset(&grid, false);
+
+        // Snap grid origin to world-space cell boundaries
+        const tl = rl.getScreenToWorld2D(rl.vec2(0, 0), cam);
+        const origin_x = @floor(tl.x / cell_world) * cell_world;
+        const origin_y = @floor(tl.y / cell_world) * cell_world;
+
         for (self.vessels[0..self.count]) |v| {
+            const gx: usize = @intFromFloat(std.math.clamp((v.x - origin_x) / cell_world, 0, @as(f32, grid_cols - 1)));
+            const gy: usize = @intFromFloat(std.math.clamp((v.y - origin_y) / cell_world, 0, @as(f32, grid_rows - 1)));
+            const gi = gy * grid_cols + gx;
+            if (grid[gi]) continue;
+            grid[gi] = true;
+
             const col = shipTypeColor(v.ship_type);
             const s: f32 = 0.06;
 
@@ -82,9 +101,6 @@ pub const AisOverlay = struct {
             const cos_r = @cos(rad);
             const sin_r = @sin(rad);
 
-            // Triangle verts in local space (tip forward = +Y up = north)
-            // tip: (0, -s), left: (-s*0.6, +s*0.5), right: (+s*0.6, +s*0.5)
-            // Rotate by course: x' = x*cos - y*sin, y' = x*sin + y*cos
             const tip = rl.vec2(v.x + (0) * cos_r - (-s) * sin_r, v.y + (0) * sin_r + (-s) * cos_r);
             const left = rl.vec2(v.x + (-s * 0.6) * cos_r - (s * 0.5) * sin_r, v.y + (-s * 0.6) * sin_r + (s * 0.5) * cos_r);
             const right = rl.vec2(v.x + (s * 0.6) * cos_r - (s * 0.5) * sin_r, v.y + (s * 0.6) * sin_r + (s * 0.5) * cos_r);
@@ -144,16 +160,42 @@ pub const AisOverlay = struct {
             }
         }
 
-        // Pass 2: draw budgeted labels with alpha fade
+        // Pass 2: draw budgeted labels with grid-based spatial thinning
         const threshold: f32 = if (n_slots == budget) min_imp else imp_thresh;
         const zoom_scale = 1.0 + std.math.clamp((cam.zoom - 3.0) * 0.08, 0.0, 1.0);
         const font_size: f32 = 9.0 * zoom_scale;
 
+        // World-space label grid: stable under panning
+        const lcell_w: f32 = 100.0 / cam.zoom;
+        const lcell_h: f32 = 18.0 / cam.zoom;
+        const lgrid_cols: usize = 40;
+        const lgrid_rows: usize = 120;
+        var lgrid: [lgrid_cols * lgrid_rows]bool = undefined;
+        @memset(&lgrid, false);
+
+        const ltl = rl.getScreenToWorld2D(rl.vec2(0, 0), cam);
+        const lorigin_x = @floor(ltl.x / lcell_w) * lcell_w;
+        const lorigin_y = @floor(ltl.y / lcell_h) * lcell_h;
+
+        // Sort slots by importance descending so the most important labels win cells
+        std.mem.sort(@TypeOf(slots[0]), slots[0..n_slots], {}, struct {
+            fn cmp(_: void, a: @TypeOf(slots[0]), b: @TypeOf(slots[0])) bool {
+                return a.importance > b.importance;
+            }
+        }.cmp);
+
         for (slots[0..n_slots]) |slot| {
+            // World-space label thinning
+            const v = self.vessels[slot.idx];
+            const lx: usize = @intFromFloat(std.math.clamp((v.x - lorigin_x) / lcell_w, 0, @as(f32, lgrid_cols - 1)));
+            const ly: usize = @intFromFloat(std.math.clamp((v.y - lorigin_y) / lcell_h, 0, @as(f32, lgrid_rows - 1)));
+            const li = ly * lgrid_cols + lx;
+            if (lgrid[li]) continue;
+            lgrid[li] = true;
+
             const above = slot.importance - threshold;
             const range: f32 = 0.5;
             const alpha = std.math.clamp(above / (range * 0.3), 0.15, 1.0);
-            const v = self.vessels[slot.idx];
             const base = shipTypeColor(v.ship_type);
             const a: u8 = @intFromFloat(alpha * @as(f32, @floatFromInt(base.a)));
             const col = rl.colorAlpha(base, a);

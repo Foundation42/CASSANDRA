@@ -62,9 +62,28 @@ pub const AdsbOverlay = struct {
         }
     }
 
-    pub fn drawWorld(self: *AdsbOverlay, _: *const overlay.FrameContext) void {
+    pub fn drawWorld(self: *AdsbOverlay, fctx: *const overlay.FrameContext) void {
+        // World-space grid thinning: stable under panning
+        const cam = fctx.cam;
+        const cell_world: f32 = 12.0 / cam.zoom;
+        const grid_cols: usize = 320;
+        const grid_rows: usize = 180;
+        var grid: [grid_cols * grid_rows]bool = undefined;
+        @memset(&grid, false);
+
+        const tl = rl.getScreenToWorld2D(rl.vec2(0, 0), cam);
+        const origin_x = @floor(tl.x / cell_world) * cell_world;
+        const origin_y = @floor(tl.y / cell_world) * cell_world;
+
         for (self.aircraft[0..self.count]) |ac| {
             if (ac.on_ground) continue;
+
+            const gx: usize = @intFromFloat(std.math.clamp((ac.x - origin_x) / cell_world, 0, @as(f32, grid_cols - 1)));
+            const gy: usize = @intFromFloat(std.math.clamp((ac.y - origin_y) / cell_world, 0, @as(f32, grid_rows - 1)));
+            const gi = gy * grid_cols + gx;
+            if (grid[gi]) continue;
+            grid[gi] = true;
+
             const pos = rl.vec2(ac.x, ac.y);
             const col = altitudeColor(ac.altitude);
             rl.drawCircleV(pos, 0.05, col);
@@ -130,16 +149,40 @@ pub const AdsbOverlay = struct {
             }
         }
 
-        // Pass 2: draw budgeted labels with alpha fade
+        // Pass 2: draw budgeted labels with grid-based spatial thinning
         const threshold: f32 = if (n_slots == budget) min_imp else imp_thresh;
         const zoom_scale = 1.0 + std.math.clamp((cam.zoom - 2.0) * 0.08, 0.0, 1.0);
         const font_size: f32 = 9.0 * zoom_scale;
 
+        const lcell_w: f32 = 80.0 / cam.zoom;
+        const lcell_h: f32 = 18.0 / cam.zoom;
+        const lgrid_cols: usize = 48;
+        const lgrid_rows: usize = 120;
+        var lgrid: [lgrid_cols * lgrid_rows]bool = undefined;
+        @memset(&lgrid, false);
+
+        const ltl = rl.getScreenToWorld2D(rl.vec2(0, 0), cam);
+        const lorigin_x = @floor(ltl.x / lcell_w) * lcell_w;
+        const lorigin_y = @floor(ltl.y / lcell_h) * lcell_h;
+
+        // Sort by importance descending so best labels claim cells first
+        std.mem.sort(@TypeOf(slots[0]), slots[0..n_slots], {}, struct {
+            fn cmp(_: void, a: @TypeOf(slots[0]), b: @TypeOf(slots[0])) bool {
+                return a.importance > b.importance;
+            }
+        }.cmp);
+
         for (slots[0..n_slots]) |slot| {
+            const ac = self.aircraft[slot.idx];
+            const lx: usize = @intFromFloat(std.math.clamp((ac.x - lorigin_x) / lcell_w, 0, @as(f32, lgrid_cols - 1)));
+            const ly: usize = @intFromFloat(std.math.clamp((ac.y - lorigin_y) / lcell_h, 0, @as(f32, lgrid_rows - 1)));
+            const li = ly * lgrid_cols + lx;
+            if (lgrid[li]) continue;
+            lgrid[li] = true;
+
             const above = slot.importance - threshold;
             const range: f32 = 0.5;
             const alpha = std.math.clamp(above / (range * 0.3), 0.15, 1.0);
-            const ac = self.aircraft[slot.idx];
             const base = altitudeColor(ac.altitude);
             const a: u8 = @intFromFloat(alpha * @as(f32, @floatFromInt(base.a)));
             const col = rl.colorAlpha(base, a);
