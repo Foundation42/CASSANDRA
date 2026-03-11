@@ -2,6 +2,7 @@ const std = @import("std");
 const rl = @import("rl.zig");
 const camera = @import("camera.zig");
 const data = @import("data.zig");
+const geo_places = @import("geo_places.zig");
 
 const LAND_COLOR = rl.color(18, 18, 30, 255);
 const HEAT_COLOR = rl.color(200, 80, 40, 255);
@@ -51,7 +52,9 @@ pub const WorldMap = struct {
     selected: ?usize = null, // index into regions
     last_click_time: f64 = 0,
     name_to_region: std.StringHashMap(u16),
+    name_to_geo: std.StringHashMap([2]f32),
     point_region: [MAX_NAMES]?u16 = [_]?u16{null} ** MAX_NAMES,
+    point_geo: [MAX_NAMES]?[2]f32 = [_]?[2]f32{null} ** MAX_NAMES,
     last_display_count: usize = 0,
     heat: [MAX_REGIONS]f32 = [_]f32{0} ** MAX_REGIONS,
     // Spread box per region: center + half-extents of largest polygon (for geo distribution)
@@ -464,8 +467,99 @@ pub const WorldMap = struct {
             }
         }
 
+        // Build exact geo position lookup from generated place table
+        var name_to_geo = std.StringHashMap([2]f32).init(allocator);
+        for (geo_places.places) |place| {
+            const world_pos = latLonToWorld(place.lat, place.lon);
+            name_to_geo.put(place.name, world_pos) catch {};
+            // Also register in name_to_region for heat contribution
+            if (!name_to_region.contains(place.name)) {
+                if (name_to_region.get(place.country)) |ri| {
+                    name_to_region.put(place.name, ri) catch {};
+                }
+            }
+        }
+
+        // Hand-curated extra geo positions: sub-national regions, continents,
+        // geopolitical terms that the generated table doesn't cover.
+        const extra_places = [_]struct { name: []const u8, lat: f32, lon: f32, country: ?[]const u8 }{
+            // UK sub-countries
+            .{ .name = "scotland", .lat = 56.49, .lon = -4.20, .country = "united kingdom" },
+            .{ .name = "wales", .lat = 52.13, .lon = -3.78, .country = "united kingdom" },
+            .{ .name = "england", .lat = 52.36, .lon = -1.17, .country = "united kingdom" },
+            .{ .name = "northern ireland", .lat = 54.64, .lon = -6.66, .country = "united kingdom" },
+            .{ .name = "britain", .lat = 53.0, .lon = -1.5, .country = "united kingdom" },
+            .{ .name = "british", .lat = 53.0, .lon = -1.5, .country = "united kingdom" },
+            // Continents and macro-regions (centroid approximations)
+            .{ .name = "europe", .lat = 50.0, .lon = 10.0, .country = null },
+            .{ .name = "european", .lat = 50.0, .lon = 10.0, .country = null },
+            .{ .name = "africa", .lat = 2.0, .lon = 22.0, .country = null },
+            .{ .name = "african", .lat = 2.0, .lon = 22.0, .country = null },
+            .{ .name = "asia", .lat = 35.0, .lon = 90.0, .country = null },
+            .{ .name = "asian", .lat = 35.0, .lon = 90.0, .country = null },
+            .{ .name = "middle east", .lat = 29.0, .lon = 42.0, .country = null },
+            .{ .name = "middle eastern", .lat = 29.0, .lon = 42.0, .country = null },
+            .{ .name = "latin america", .lat = -10.0, .lon = -55.0, .country = null },
+            .{ .name = "south america", .lat = -15.0, .lon = -58.0, .country = null },
+            .{ .name = "north america", .lat = 45.0, .lon = -100.0, .country = null },
+            .{ .name = "central america", .lat = 14.0, .lon = -87.0, .country = null },
+            .{ .name = "caribbean", .lat = 18.0, .lon = -72.0, .country = null },
+            .{ .name = "southeast asia", .lat = 5.0, .lon = 110.0, .country = null },
+            .{ .name = "east asia", .lat = 35.0, .lon = 115.0, .country = null },
+            .{ .name = "south asia", .lat = 22.0, .lon = 78.0, .country = null },
+            .{ .name = "central asia", .lat = 42.0, .lon = 65.0, .country = null },
+            .{ .name = "pacific", .lat = 0.0, .lon = -160.0, .country = null },
+            .{ .name = "atlantic", .lat = 25.0, .lon = -35.0, .country = null },
+            .{ .name = "arctic", .lat = 75.0, .lon = 0.0, .country = null },
+            .{ .name = "antarctic", .lat = -75.0, .lon = 0.0, .country = null },
+            .{ .name = "sahara", .lat = 23.0, .lon = 12.0, .country = null },
+            .{ .name = "siberia", .lat = 60.0, .lon = 100.0, .country = "russia" },
+            .{ .name = "balkans", .lat = 42.0, .lon = 21.0, .country = null },
+            .{ .name = "scandinavia", .lat = 63.0, .lon = 15.0, .country = null },
+            .{ .name = "mediterranean", .lat = 36.0, .lon = 15.0, .country = null },
+            // Korea (ambiguous — place between the two)
+            .{ .name = "korea", .lat = 37.0, .lon = 127.5, .country = null },
+            .{ .name = "korean", .lat = 37.0, .lon = 127.5, .country = null },
+            // Well-known sub-regions
+            .{ .name = "kashmir", .lat = 34.3, .lon = 75.5, .country = "india" },
+            .{ .name = "tibet", .lat = 31.0, .lon = 88.0, .country = "china" },
+            .{ .name = "xinjiang", .lat = 41.0, .lon = 85.0, .country = "china" },
+            .{ .name = "crimea", .lat = 45.0, .lon = 34.0, .country = "ukraine" },
+            .{ .name = "catalonia", .lat = 41.8, .lon = 1.5, .country = "spain" },
+            .{ .name = "bavaria", .lat = 48.8, .lon = 11.5, .country = "germany" },
+            .{ .name = "normandy", .lat = 48.9, .lon = -0.2, .country = "france" },
+            .{ .name = "provence", .lat = 43.7, .lon = 5.8, .country = "france" },
+            .{ .name = "tuscany", .lat = 43.3, .lon = 11.3, .country = "italy" },
+            .{ .name = "silicon valley", .lat = 37.4, .lon = -122.1, .country = "united states of america" },
+            .{ .name = "wall street", .lat = 40.71, .lon = -74.01, .country = "united states of america" },
+            .{ .name = "hollywood", .lat = 34.1, .lon = -118.3, .country = "united states of america" },
+            .{ .name = "pentagon", .lat = 38.87, .lon = -77.06, .country = "united states of america" },
+            .{ .name = "white house", .lat = 38.90, .lon = -77.04, .country = "united states of america" },
+            .{ .name = "capitol", .lat = 38.89, .lon = -77.01, .country = "united states of america" },
+            .{ .name = "kremlin", .lat = 55.75, .lon = 37.62, .country = "russia" },
+            .{ .name = "gaza", .lat = 31.5, .lon = 34.47, .country = "palestine" },
+            .{ .name = "gaza strip", .lat = 31.4, .lon = 34.4, .country = "palestine" },
+            .{ .name = "golan heights", .lat = 33.0, .lon = 35.8, .country = "israel" },
+            .{ .name = "west bank", .lat = 31.9, .lon = 35.3, .country = "palestine" },
+            .{ .name = "hong kong", .lat = 22.32, .lon = 114.17, .country = "china" },
+            .{ .name = "far east", .lat = 40.0, .lon = 120.0, .country = null },
+        };
+        for (extra_places) |place| {
+            // Extra places override generated ones (hand-curated is more precise)
+            const world_pos = latLonToWorld(place.lat, place.lon);
+            name_to_geo.put(place.name, world_pos) catch {};
+            // Register in name_to_region for heat contribution
+            if (place.country) |country| {
+                if (!name_to_region.contains(place.name)) {
+                    if (name_to_region.get(country)) |ri| {
+                        name_to_region.put(place.name, ri) catch {};
+                    }
+                }
+            }
+        }
+
         // Precompute spread boxes from largest polygon per region
-        var result: WorldMap = .{ .regions = regions, .buf = buf, .name_to_region = name_to_region };
+        var result: WorldMap = .{ .regions = regions, .buf = buf, .name_to_region = name_to_region, .name_to_geo = name_to_geo };
         for (regions, 0..) |region, ri| {
             // Find largest polygon by bounding box area
             var best_area: f32 = -1;
@@ -490,7 +584,7 @@ pub const WorldMap = struct {
             }
         }
 
-        std.debug.print("worldmap: loaded {} regions, {} triangles, {} name mappings\n", .{ num_regions, total_tris, name_to_region.count() });
+        std.debug.print("worldmap: loaded {} regions, {} triangles, {} name mappings, {} exact geo places\n", .{ num_regions, total_tris, name_to_region.count(), name_to_geo.count() });
         return result;
     }
 
@@ -564,8 +658,10 @@ pub const WorldMap = struct {
                         lower_buf[ci] = if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
                     }
                     self.point_region[i] = self.name_to_region.get(lower_buf[0..word.len]);
+                    self.point_geo[i] = self.name_to_geo.get(lower_buf[0..word.len]);
                 } else {
                     self.point_region[i] = null;
+                    self.point_geo[i] = null;
                 }
             }
             self.last_display_count = cur_count;

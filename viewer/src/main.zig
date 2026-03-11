@@ -351,11 +351,16 @@ pub fn main() !void {
                     }
                 }
             }
-            // Populate geo targets from worldmap, spread within largest polygon bbox
+            // Populate geo targets: exact position if available, else spread within country bbox
             if (wmap) |*m| {
                 for (0..phys.count) |i| {
                     const ni = phys.name_indices[i];
-                    if (m.point_region[ni]) |ri| {
+                    if (m.point_geo[ni]) |geo| {
+                        // Exact position from geo_places table
+                        phys.geo_x[i] = geo[0];
+                        phys.geo_y[i] = geo[1];
+                        phys.has_geo[i] = true;
+                    } else if (m.point_region[ni]) |ri| {
                         // Deterministic spread within country bbox
                         const seed: u32 = @as(u32, ni) *% 2654435761; // Knuth multiplicative hash
                         const sx = @as(f32, @floatFromInt(seed & 0xFFFF)) / 65536.0 * 2.0 - 1.0; // -1..1
