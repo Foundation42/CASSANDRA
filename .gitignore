@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Data & models
+data/
+*.pkl
+*.pkl.tmp
+*.db
+*.db-shm
+*.db-wal
+
+# Generated output
+frames/
+*.png
+*.mp4
+
+# JSON state files
+nucleus_positions.json
+nucleus_recency.json
+
+# Logs
+hourly.log
+
+# GeoJSON data
+*.geojson

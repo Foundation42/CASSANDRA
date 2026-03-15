@@ -1,0 +1,38 @@
+CASSANDRA - Dual License
+
+Copyright (c) 2025-2026 Christian Beaumont
+
+This software is available under two licenses:
+
+1. NON-COMMERCIAL USE
+
+   Permission is hereby granted, free of charge, to any person obtaining a
+   copy of this software and associated documentation files (the "Software"),
+   to use, copy, modify, merge, and distribute the Software for non-commercial
+   purposes, subject to the following conditions:
+
+   - The above copyright notice and this permission notice shall be included
+     in all copies or substantial portions of the Software.
+
+   - The Software may not be used, directly or indirectly, for commercial
+     purposes without a separate commercial license (see below).
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+
+2. COMMERCIAL USE
+
+   Any use of the Software for commercial purposes — including but not limited
+   to incorporating it into a commercial product, offering it as part of a
+   paid service, or using it internally within a for-profit organization —
+   requires a separate commercial license.
+
+   To obtain a commercial license, contact:
+
+     Christian Beaumont
+     chris@foundation42.org
