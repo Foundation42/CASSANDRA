@@ -16,6 +16,7 @@ const overlay_mod = @import("overlay.zig");
 const perf_mod = @import("perf.zig");
 const adsb = @import("overlays/adsb.zig");
 const ais = @import("overlays/ais.zig");
+const cameras = @import("overlays/cameras.zig");
 const photo_mod = @import("photo.zig");
 const overlay_db_mod = @import("overlay_db.zig");
 
@@ -114,6 +115,7 @@ pub fn main() !void {
     var overlays = overlay_mod.OverlaySet(struct {
         adsb: adsb.AdsbOverlay = .{},
         ais: ais.AisOverlay = .{},
+        cams: cameras.CameraOverlay = .{},
     }).init();
 
     // Pass DB handle to overlays so workers can persist data

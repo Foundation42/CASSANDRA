@@ -148,6 +148,7 @@ The viewer has live overlays toggled with keyboard shortcuts:
 |-----|---------|--------|
 | `S` | Ships (AIS) | Digitraffic (Finland) by default |
 | `A` | Aircraft (ADS-B) | OpenSky Network |
+| `W` | Cameras | JPEG snapshot feeds (user-configured) |
 
 For **global ship coverage**, set an [aisstream.io](https://aisstream.io) API key:
 
@@ -156,6 +157,17 @@ export AISSTREAM_API_KEY=your_key_here
 ```
 
 Without it, ship data is limited to the Finnish coast via the free Digitraffic API.
+
+**Cameras** are configured in `cameras.json`. Each entry needs a name, lat/lon, and a URL that returns a JPEG or PNG snapshot:
+
+```json
+[
+  {"name": "Jackson Hole Town Square", "lat": 43.4799, "lon": -110.7624, "url": "https://www.seejh.com/cams/townsquare/townsquare.jpg"},
+  {"name": "Your Local Traffic Cam",   "lat": 51.5,    "lon": -0.12,     "url": "https://example.com/cam.jpg"}
+]
+```
+
+The viewer polls each camera every 30 seconds. Click a camera icon on the map to see its latest snapshot in the detail panel. DOT highway cameras, weather stations, and any URL that serves a static image will work.
 
 ### 4. Batch rendering (optional)
 
@@ -221,6 +233,7 @@ python make_movie.py      # stitches into concept_timelapse.mp4
 |-----|--------|
 | `S` | Toggle ships (AIS) |
 | `A` | Toggle aircraft (ADS-B) |
+| `W` | Toggle cameras |
 
 ## Like what you see?
 
