@@ -2,10 +2,14 @@ const std = @import("std");
 const rl = @import("../rl.zig");
 const overlay = @import("../overlay.zig");
 const worldmap_mod = @import("../worldmap.zig");
+const ffmpeg = @import("../ffmpeg.zig");
 
 const MAX_CAMERAS: usize = 256;
 const POLL_INTERVAL_NS: u64 = 30 * std.time.ns_per_s;
-const ICON_RADIUS: f32 = 4.0;
+const VIDEO_FRAME_INTERVAL_NS: u64 = 200 * std.time.ns_per_ms; // ~5 fps
+const MAX_VIDEO_THREADS: usize = 4;
+
+const CameraMode = enum { snapshot, stream };
 
 pub const Camera = struct {
     x: f32,
@@ -14,11 +18,14 @@ pub const Camera = struct {
     name_len: u8 = 0,
     url: [512]u8 = .{0} ** 512,
     url_len: u16 = 0,
+    mode: CameraMode = .snapshot,
 };
 
 const ImageResponse = struct {
     cam_idx: u16,
     image_bytes: ?[]u8,
+    width: u16 = 0, // >0 means raw RGBA pixels
+    height: u16 = 0,
 };
 
 pub const CameraOverlay = struct {
@@ -35,8 +42,11 @@ pub const CameraOverlay = struct {
     worker: ?std.Thread = null,
     shutdown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
+    // Video stream worker threads (one per stream camera)
+    video_workers: [MAX_VIDEO_THREADS]?std.Thread = .{null} ** MAX_VIDEO_THREADS,
+
     // Response queue: worker → main
-    resp_queue: [8]ImageResponse = undefined,
+    resp_queue: [16]ImageResponse = undefined,
     resp_len: usize = 0,
 
     // Selected camera for detail view
@@ -55,8 +65,10 @@ pub const CameraOverlay = struct {
                 self.loadConfig();
                 if (self.worker == null) {
                     self.shutdown.store(false, .release);
-                    self.worker = std.Thread.spawn(.{}, workerLoop, .{self}) catch null;
+                    self.worker = std.Thread.spawn(.{}, snapshotWorkerLoop, .{self}) catch null;
                 }
+                // Spawn video stream workers
+                self.spawnVideoWorkers();
             }
         }
     }
@@ -65,7 +77,7 @@ pub const CameraOverlay = struct {
         // Drain response queue and create textures on main thread
         self.mutex.lock();
         const n = self.resp_len;
-        var resps: [8]ImageResponse = undefined;
+        var resps: [16]ImageResponse = undefined;
         @memcpy(resps[0..n], self.resp_queue[0..n]);
         self.resp_len = 0;
         self.mutex.unlock();
@@ -73,15 +85,31 @@ pub const CameraOverlay = struct {
         for (resps[0..n]) |resp| {
             if (resp.image_bytes) |bytes| {
                 defer std.heap.page_allocator.free(bytes);
-                const fmt = detectFormat(bytes);
-                const img = rl.c.LoadImageFromMemory(fmt, bytes.ptr, @intCast(bytes.len));
-                if (img.data != null) {
-                    // Unload previous texture if any
-                    if (self.textures[resp.cam_idx]) |old| {
-                        rl.c.UnloadTexture(old);
-                    }
+
+                // Unload previous texture if any
+                if (self.textures[resp.cam_idx]) |old| {
+                    rl.c.UnloadTexture(old);
+                    self.textures[resp.cam_idx] = null;
+                }
+
+                if (resp.width > 0 and resp.height > 0) {
+                    // Raw RGBA pixels from video decoder
+                    const img = rl.c.Image{
+                        .data = @ptrCast(bytes.ptr),
+                        .width = @intCast(resp.width),
+                        .height = @intCast(resp.height),
+                        .format = rl.c.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+                        .mipmaps = 1,
+                    };
                     self.textures[resp.cam_idx] = rl.c.LoadTextureFromImage(img);
-                    rl.c.UnloadImage(img);
+                } else {
+                    // Encoded image (JPEG/PNG)
+                    const fmt = detectFormat(bytes);
+                    const img = rl.c.LoadImageFromMemory(fmt, bytes.ptr, @intCast(bytes.len));
+                    if (img.data != null) {
+                        self.textures[resp.cam_idx] = rl.c.LoadTextureFromImage(img);
+                        rl.c.UnloadImage(img);
+                    }
                 }
             }
         }
@@ -104,11 +132,16 @@ pub const CameraOverlay = struct {
 
             // Camera icon: small world-space dot (matches ADSB/AIS scale)
             const pos = rl.vec2(c.x, c.y);
+            const color = if (c.mode == .stream)
+                rl.c.Color{ .r = 50, .g = 200, .b = 255, .a = 200 } // blue for video
+            else
+                rl.c.Color{ .r = 255, .g = 200, .b = 50, .a = 200 }; // yellow for snapshot
+
             if (is_selected) {
-                rl.c.DrawCircleV(pos, 0.15, rl.c.Color{ .r = 255, .g = 200, .b = 50, .a = 60 });
+                rl.c.DrawCircleV(pos, 0.15, rl.c.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 60 });
             }
-            rl.c.DrawCircleV(pos, 0.06, rl.c.Color{ .r = 255, .g = 200, .b = 50, .a = 200 });
-            rl.c.DrawCircleLinesV(pos, 0.08, rl.c.Color{ .r = 255, .g = 200, .b = 50, .a = 120 });
+            rl.c.DrawCircleV(pos, 0.06, color);
+            rl.c.DrawCircleLinesV(pos, 0.08, rl.c.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 120 });
 
             // Label
             if (cam.zoom > 5.0 or is_selected) {
@@ -117,7 +150,7 @@ pub const CameraOverlay = struct {
                 var label_buf: [65:0]u8 = undefined;
                 @memcpy(label_buf[0..c.name_len], c.name[0..c.name_len]);
                 label_buf[c.name_len] = 0;
-                rl.drawTextEx(fctx.font, &label_buf, rl.vec2(screen.x + 8, screen.y - 5), font_size, 1.0, rl.c.Color{ .r = 255, .g = 200, .b = 50, .a = 180 });
+                rl.drawTextEx(fctx.font, &label_buf, rl.vec2(screen.x + 8, screen.y - 5), font_size, 1.0, rl.c.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 180 });
             }
         }
     }
@@ -144,13 +177,17 @@ pub const CameraOverlay = struct {
             rl.c.Color{ .r = 10, .g = 12, .b = 18, .a = 220 },
         );
 
-        // Camera name
+        // Camera name + mode badge
         var name_buf: [65:0]u8 = undefined;
         @memcpy(name_buf[0..c.name_len], c.name[0..c.name_len]);
         name_buf[c.name_len] = 0;
-        rl.drawTextEx(fctx.font, &name_buf, rl.vec2(panel_x + 10, panel_y + 8), 12, 1.0, rl.c.Color{ .r = 255, .g = 200, .b = 50, .a = 255 });
+        const name_color = if (c.mode == .stream)
+            rl.c.Color{ .r = 50, .g = 200, .b = 255, .a = 255 }
+        else
+            rl.c.Color{ .r = 255, .g = 200, .b = 50, .a = 255 };
+        rl.drawTextEx(fctx.font, &name_buf, rl.vec2(panel_x + 10, panel_y + 8), 12, 1.0, name_color);
 
-        // Snapshot image
+        // Snapshot/video image
         if (self.textures[item_idx]) |tex| {
             const img_y = panel_y + 28;
             const img_w = panel_w - 20;
@@ -255,19 +292,51 @@ pub const CameraOverlay = struct {
             @memcpy(cam_entry.url[0..url_len], url_val.string[0..url_len]);
             cam_entry.url_len = @intCast(url_len);
 
+            // Determine mode from JSON or URL heuristic
+            cam_entry.mode = .snapshot;
+            if (item.object.get("type")) |type_val| {
+                if (type_val == .string) {
+                    if (std.mem.eql(u8, type_val.string, "stream")) {
+                        cam_entry.mode = .stream;
+                    }
+                }
+            }
+            if (cam_entry.mode == .snapshot) {
+                cam_entry.mode = detectMode(url_val.string);
+            }
+
             self.cameras[self.count] = cam_entry;
             self.count += 1;
         }
 
         self.loaded = true;
-        std.debug.print("CAMS: loaded {d} cameras\n", .{self.count});
+
+        var n_snap: usize = 0;
+        var n_stream: usize = 0;
+        for (self.cameras[0..self.count]) |cam_entry| {
+            if (cam_entry.mode == .snapshot) n_snap += 1 else n_stream += 1;
+        }
+        std.debug.print("CAMS: loaded {d} cameras ({d} snapshot, {d} stream)\n", .{ self.count, n_snap, n_stream });
+    }
+
+    fn spawnVideoWorkers(self: *CameraOverlay) void {
+        var vid_idx: usize = 0;
+        for (0..self.count) |i| {
+            if (vid_idx >= MAX_VIDEO_THREADS) break;
+            if (self.cameras[i].mode != .stream) continue;
+            if (self.video_workers[vid_idx] != null) continue;
+
+            const cam_idx: u16 = @intCast(i);
+            self.video_workers[vid_idx] = std.Thread.spawn(.{}, videoWorkerLoop, .{ self, cam_idx }) catch null;
+            vid_idx += 1;
+        }
     }
 
     // ---------------------------------------------------------------
-    // Worker thread: fetches snapshots in a round-robin loop
+    // Snapshot worker: fetches JPEG/PNG snapshots in a round-robin
     // ---------------------------------------------------------------
 
-    fn workerLoop(self: *CameraOverlay) void {
+    fn snapshotWorkerLoop(self: *CameraOverlay) void {
         var client = std.http.Client{ .allocator = std.heap.page_allocator };
         defer client.deinit();
 
@@ -280,6 +349,7 @@ pub const CameraOverlay = struct {
 
             for (0..n) |i| {
                 if (self.shutdown.load(.acquire)) break;
+                if (self.cameras[i].mode != .snapshot) continue;
 
                 const cam_entry = self.cameras[i];
                 const url_slice = cam_entry.url[0..cam_entry.url_len];
@@ -287,20 +357,11 @@ pub const CameraOverlay = struct {
                 std.debug.print("CAMS: fetching [{d}/{d}] {s}\n", .{ i + 1, n, cam_entry.name[0..cam_entry.name_len] });
 
                 const image_bytes = fetchSnapshot(&client, url_slice);
+                self.pushResponse(.{
+                    .cam_idx = @intCast(i),
+                    .image_bytes = image_bytes,
+                });
 
-                self.mutex.lock();
-                if (self.resp_len < 8) {
-                    self.resp_queue[self.resp_len] = .{
-                        .cam_idx = @intCast(i),
-                        .image_bytes = image_bytes,
-                    };
-                    self.resp_len += 1;
-                } else {
-                    if (image_bytes) |bytes| std.heap.page_allocator.free(bytes);
-                }
-                self.mutex.unlock();
-
-                // Brief pause between cameras
                 std.time.sleep(2 * std.time.ns_per_s);
             }
 
@@ -312,11 +373,86 @@ pub const CameraOverlay = struct {
             }
         }
     }
+
+    // ---------------------------------------------------------------
+    // Video worker: decodes frames from a single video stream
+    // ---------------------------------------------------------------
+
+    fn videoWorkerLoop(self: *CameraOverlay, cam_idx: u16) void {
+        while (!self.shutdown.load(.acquire)) {
+            const cam_entry = self.cameras[cam_idx];
+            const url_slice = cam_entry.url[0..cam_entry.url_len];
+
+            // Need null-terminated URL for ffmpeg
+            var url_z: [513]u8 = undefined;
+            @memcpy(url_z[0..url_slice.len], url_slice);
+            url_z[url_slice.len] = 0;
+            const url_ptr: [*:0]const u8 = @ptrCast(&url_z);
+
+            std.debug.print("CAMS: opening stream {s}\n", .{cam_entry.name[0..cam_entry.name_len]});
+
+            var stream = ffmpeg.VideoStream.open(url_ptr) orelse {
+                std.debug.print("CAMS: failed to open stream, retrying in 5s\n", .{});
+                // Sleep 5s before retry, checking shutdown
+                var waited: u64 = 0;
+                while (waited < 5 * std.time.ns_per_s and !self.shutdown.load(.acquire)) {
+                    std.time.sleep(std.time.ns_per_s);
+                    waited += std.time.ns_per_s;
+                }
+                continue;
+            };
+            defer stream.close();
+
+            std.debug.print("CAMS: streaming {d}x{d} from {s}\n", .{ stream.width, stream.height, cam_entry.name[0..cam_entry.name_len] });
+
+            while (!self.shutdown.load(.acquire)) {
+                if (!stream.readFrame()) {
+                    std.debug.print("CAMS: stream ended/error, reconnecting\n", .{});
+                    break; // will reconnect in outer loop
+                }
+
+                // Copy frame and push to response queue
+                if (stream.copyFrame()) |rgba_bytes| {
+                    self.pushResponse(.{
+                        .cam_idx = cam_idx,
+                        .image_bytes = rgba_bytes,
+                        .width = stream.width,
+                        .height = stream.height,
+                    });
+                }
+
+                // Rate limit to ~5 fps
+                std.time.sleep(VIDEO_FRAME_INTERVAL_NS);
+            }
+        }
+    }
+
+    fn pushResponse(self: *CameraOverlay, resp: ImageResponse) void {
+        self.mutex.lock();
+        if (self.resp_len < 16) {
+            self.resp_queue[self.resp_len] = resp;
+            self.resp_len += 1;
+        } else {
+            if (resp.image_bytes) |bytes| std.heap.page_allocator.free(bytes);
+        }
+        self.mutex.unlock();
+    }
 };
 
 // ---------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------
+
+fn detectMode(url: []const u8) CameraMode {
+    if (std.mem.startsWith(u8, url, "rtsp://")) return .stream;
+    if (std.mem.startsWith(u8, url, "rtmp://")) return .stream;
+    if (std.mem.indexOf(u8, url, ".m3u8") != null) return .stream;
+    if (std.mem.indexOf(u8, url, ".flv") != null) return .stream;
+    if (std.mem.indexOf(u8, url, ".mp4") != null) return .stream;
+    if (std.mem.indexOf(u8, url, "/mjpg/") != null) return .stream;
+    if (std.mem.indexOf(u8, url, "mjpeg") != null) return .stream;
+    return .snapshot;
+}
 
 fn fetchSnapshot(client: *std.http.Client, url: []const u8) ?[]u8 {
     const uri = std.Uri.parse(url) catch return null;
@@ -325,7 +461,6 @@ fn fetchSnapshot(client: *std.http.Client, url: []const u8) ?[]u8 {
         body.deinit();
         return null;
     }
-    // Transfer to owned slice
     const result = std.heap.page_allocator.alloc(u8, body.items.len) catch {
         body.deinit();
         return null;

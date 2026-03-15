@@ -19,6 +19,10 @@ pub fn build(b: *std.Build) void {
     exe.addIncludePath(b.path("vendor/sqlite3"));
 
     exe.linkSystemLibrary("raylib");
+    exe.linkSystemLibrary("libavformat");
+    exe.linkSystemLibrary("libavcodec");
+    exe.linkSystemLibrary("libavutil");
+    exe.linkSystemLibrary("libswscale");
     exe.linkLibC();
 
     b.installArtifact(exe);

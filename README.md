@@ -218,6 +218,8 @@ python make_movie.py      # stitches into concept_timelapse.mp4
 
 ![CASSANDRA with night vision and bloom](screenshot_effects.png)
 
+![CASSANDRA with CRT shader and bloom](screenshot_crt.png)
+
 | Key | Action |
 |-----|--------|
 | `T` | Toggle motion trails |
