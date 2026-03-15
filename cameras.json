@@ -1,6 +1,12 @@
 [
-  {"name": "Tampere Rd Cam",    "lat": 61.4978, "lon": 23.7610, "url": "https://weathercam.digitraffic.fi/C0460900.jpg"},
-  {"name": "Oulu Rd Cam",       "lat": 65.0121, "lon": 25.4651, "url": "https://weathercam.digitraffic.fi/C0350701.jpg"},
-  {"name": "Jyväskylä Rd Cam",  "lat": 62.2426, "lon": 25.7473, "url": "https://weathercam.digitraffic.fi/C0167000.jpg"},
-  {"name": "HLS Test Stream",   "lat": 37.7749, "lon": -122.4194, "type": "stream", "url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"}
+  {"name": "Amsterdam Dam Square",   "lat": 52.3731, "lon": 4.8932,   "url": "https://www.skylinewebcams.com/img/webcam/netherlands/north-holland/amsterdam/amsterdam-dam-square.jpg"},
+  {"name": "Bruges Market Square",   "lat": 51.2093, "lon": 3.2247,   "url": "https://www.skylinewebcams.com/img/webcam/belgique/flandres/bruges/markt.jpg"},
+  {"name": "Tampere Rd Cam",         "lat": 61.4978, "lon": 23.7610,  "url": "https://weathercam.digitraffic.fi/C0460900.jpg"},
+  {"name": "Oulu Rd Cam",            "lat": 65.0121, "lon": 25.4651,  "url": "https://weathercam.digitraffic.fi/C0350701.jpg"},
+  {"name": "Jyväskylä Rd Cam",       "lat": 62.2426, "lon": 25.7473,  "url": "https://weathercam.digitraffic.fi/C0167000.jpg"},
+  {"name": "Seattle I-5 @ Seneca",    "lat": 47.6062, "lon": -122.3285, "url": "https://images.wsdot.wa.gov/sw/005vc00044.jpg"},
+  {"name": "Seattle I-5 @ Spring",    "lat": 47.6050, "lon": -122.3280, "url": "https://images.wsdot.wa.gov/sw/005vc00050.jpg"},
+  {"name": "Seattle I-5 @ Mercer",    "lat": 47.6245, "lon": -122.3285, "url": "https://images.wsdot.wa.gov/sw/005vc00081.jpg"},
+  {"name": "Seattle I-5 @ Ravenna",   "lat": 47.6690, "lon": -122.3155, "url": "https://images.wsdot.wa.gov/sw/005vc00105.jpg"},
+  {"name": "HLS Test Stream",         "lat": 37.7749, "lon": -122.4194, "type": "stream", "url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"}
 ]

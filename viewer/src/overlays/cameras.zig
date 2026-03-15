@@ -49,6 +49,10 @@ pub const CameraOverlay = struct {
     resp_queue: [16]ImageResponse = undefined,
     resp_len: usize = 0,
 
+    // Display positions (spread apart from data positions to avoid overlap)
+    display_x: [MAX_CAMERAS]f32 = .{0} ** MAX_CAMERAS,
+    display_y: [MAX_CAMERAS]f32 = .{0} ** MAX_CAMERAS,
+
     // Selected camera for detail view
     selected_cam: ?u16 = null,
     visible: [MAX_CAMERAS]bool = .{false} ** MAX_CAMERAS,
@@ -115,15 +119,65 @@ pub const CameraOverlay = struct {
         }
     }
 
+    /// Push overlapping camera display positions apart so they're selectable.
+    fn separateCameras(self: *CameraOverlay, zoom: f32) void {
+        const n = self.count;
+        if (n == 0) return;
+
+        // Initialize display positions from data positions
+        for (0..n) |i| {
+            self.display_x[i] = self.cameras[i].x;
+            self.display_y[i] = self.cameras[i].y;
+        }
+
+        // Minimum separation in world space (scales with zoom so they spread at low zoom)
+        const min_sep: f32 = 20.0 / zoom;
+
+        // A few iterations of repulsion
+        var iter: usize = 0;
+        while (iter < 8) : (iter += 1) {
+            var moved = false;
+            for (0..n) |i| {
+                for (i + 1..n) |j| {
+                    var dx = self.display_x[j] - self.display_x[i];
+                    var dy = self.display_y[j] - self.display_y[i];
+                    const dist = @sqrt(dx * dx + dy * dy);
+
+                    if (dist < min_sep) {
+                        // Push apart
+                        if (dist < 0.0001) {
+                            // Coincident — nudge in arbitrary direction
+                            dx = min_sep * 0.5;
+                            dy = min_sep * 0.3;
+                        } else {
+                            const overlap = (min_sep - dist) * 0.5;
+                            dx = dx / dist * overlap;
+                            dy = dy / dist * overlap;
+                        }
+                        self.display_x[i] -= dx;
+                        self.display_y[i] -= dy;
+                        self.display_x[j] += dx;
+                        self.display_y[j] += dy;
+                        moved = true;
+                    }
+                }
+            }
+            if (!moved) break;
+        }
+    }
+
     pub fn drawWorld(self: *CameraOverlay, fctx: *const overlay.FrameContext) void {
         const cam = fctx.cam;
         const sw_f: f32 = @floatFromInt(fctx.sw);
         const sh_f: f32 = @floatFromInt(fctx.sh);
         const margin: f32 = 20.0;
 
+        self.separateCameras(cam.zoom);
+
         for (0..self.count) |i| {
-            const c = self.cameras[i];
-            const screen = rl.getWorldToScreen2D(rl.vec2(c.x, c.y), cam);
+            const dx = self.display_x[i];
+            const dy = self.display_y[i];
+            const screen = rl.getWorldToScreen2D(rl.vec2(dx, dy), cam);
             self.visible[i] = screen.x >= -margin and screen.x <= sw_f + margin and
                 screen.y >= -margin and screen.y <= sh_f + margin;
             if (!self.visible[i]) continue;
@@ -131,8 +185,8 @@ pub const CameraOverlay = struct {
             const is_selected = if (self.selected_cam) |sel| sel == i else false;
 
             // Camera icon: small world-space dot (matches ADSB/AIS scale)
-            const pos = rl.vec2(c.x, c.y);
-            const color = if (c.mode == .stream)
+            const pos = rl.vec2(dx, dy);
+            const color = if (self.cameras[i].mode == .stream)
                 rl.c.Color{ .r = 50, .g = 200, .b = 255, .a = 200 } // blue for video
             else
                 rl.c.Color{ .r = 255, .g = 200, .b = 50, .a = 200 }; // yellow for snapshot
@@ -143,14 +197,24 @@ pub const CameraOverlay = struct {
             rl.c.DrawCircleV(pos, 0.06, color);
             rl.c.DrawCircleLinesV(pos, 0.08, rl.c.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 120 });
 
-            // Label
-            if (cam.zoom > 5.0 or is_selected) {
-                const zoom_scale = 1.0 + std.math.clamp((cam.zoom - 2.0) * 0.08, 0.0, 1.0);
-                const font_size: f32 = 9.0 * zoom_scale;
+            // Line from display pos back to real pos (if separated)
+            const real = self.cameras[i];
+            const real_dx = dx - real.x;
+            const real_dy = dy - real.y;
+            if (real_dx * real_dx + real_dy * real_dy > 0.0001) {
+                rl.c.DrawLineV(rl.vec2(real.x, real.y), pos, rl.c.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 40 });
+            }
+
+            // Label (world-space, scaled inversely with zoom so it looks constant on screen)
+            {
+                const font_size: f32 = 10.0 / cam.zoom;
                 var label_buf: [65:0]u8 = undefined;
-                @memcpy(label_buf[0..c.name_len], c.name[0..c.name_len]);
-                label_buf[c.name_len] = 0;
-                rl.drawTextEx(fctx.font, &label_buf, rl.vec2(screen.x + 8, screen.y - 5), font_size, 1.0, rl.c.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 180 });
+                const nl = real.name_len;
+                @memcpy(label_buf[0..nl], real.name[0..nl]);
+                label_buf[nl] = 0;
+                const label_x = dx + 0.12;
+                const label_y = dy - 0.05;
+                rl.drawTextEx(fctx.font, &label_buf, rl.vec2(label_x, label_y), font_size, font_size * 0.1, rl.c.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 180 });
             }
         }
     }
@@ -214,9 +278,8 @@ pub const CameraOverlay = struct {
 
         for (0..self.count) |i| {
             if (!self.visible[i]) continue;
-            const c = self.cameras[i];
-            const dx = world_pos.x - c.x;
-            const dy = world_pos.y - c.y;
+            const dx = world_pos.x - self.display_x[i];
+            const dy = world_pos.y - self.display_y[i];
             const d2 = dx * dx + dy * dy;
             if (d2 < best_dist) {
                 best_dist = d2;

@@ -17,6 +17,8 @@ frames/
 !screenshot.png
 !screenshot_effects.png
 !screenshot_crt.png
+!screenshot_cameras.png
+!screenshot_cameras_fi.png
 *.mp4
 
 # JSON state files

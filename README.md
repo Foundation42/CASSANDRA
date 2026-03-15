@@ -169,6 +169,16 @@ Without it, ship data is limited to the Finnish coast via the free Digitraffic A
 
 The viewer polls each camera every 30 seconds. Click a camera icon on the map to see its latest snapshot in the detail panel. DOT highway cameras, weather stations, and any URL that serves a static image will work.
 
+Video streams (RTSP, HLS, MJPEG) are also supported via ffmpeg. Set `"type": "stream"` in the config, or the viewer will auto-detect from the URL:
+
+```json
+{"name": "My RTSP Cam", "lat": 52.37, "lon": 4.89, "type": "stream", "url": "rtsp://..."}
+```
+
+![Camera overlay — Seattle WSDOT traffic cams](screenshot_cameras.png)
+
+![Camera overlay — Finnish road weather cams](screenshot_cameras_fi.png)
+
 ### 4. Batch rendering (optional)
 
 ```bash
