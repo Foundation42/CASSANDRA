@@ -10,6 +10,7 @@ const physics = @import("physics.zig");
 const live = @import("live.zig");
 const bvh = @import("bvh.zig");
 const effects = @import("effects.zig");
+const terminal_mod = @import("terminal.zig");
 const navmesh = @import("navmesh.zig");
 const worldmap_mod = @import("worldmap.zig");
 const overlay_mod = @import("overlay.zig");
@@ -105,6 +106,16 @@ pub fn main() !void {
 
     // Post-processing effects (trails + bloom)
     var fx: effects.Effects = .{};
+
+    // Terminal emulator
+    var term: terminal_mod.Terminal = .{};
+    term.init(100, 30, 14.0);
+    defer term.deinit();
+
+    // Welcome message
+    term.write("\x1b[1;32mCASSANDRA Terminal\x1b[0m v1.0\r\n");
+    term.write("\x1b[36m─────────────────────────────\x1b[0m\r\n");
+    term.write("Type \x1b[1;33m/help\x1b[0m for commands\r\n\r\n");
     defer fx.deinit();
 
     // Overlay persistence DB
@@ -246,9 +257,22 @@ pub fn main() !void {
         if (rl.isKeyPressed(rl.KEY_F11) or rl.isKeyPressed(rl.KEY_F)) {
             rl.toggleFullscreen();
         }
-        fx.handleInput();
+
+        // Toggle terminal with backtick
+        if (rl.isKeyPressed(rl.c.KEY_GRAVE)) {
+            term.visible = !term.visible;
+            term.focused = term.visible;
+        }
+
+        // Terminal input takes priority when focused
+        if (term.focused) {
+            term.handleInput();
+            term.update(rl.getFrameTime());
+        }
+
+        if (!term.focused) fx.handleInput();
         perf.handleInput();
-        overlays.handleToggles();
+        if (!term.focused) overlays.handleToggles();
         if (search.active) {
             search.handleInput();
         } else {
@@ -758,6 +782,14 @@ pub fn main() !void {
         }
 
         perf.endFrame();
+        // Terminal overlay
+        if (term.visible) {
+            term.render();
+            const term_x: f32 = 10;
+            const term_y: f32 = @as(f32, @floatFromInt(sh)) - @as(f32, @floatFromInt(term.render_tex.texture.height)) - 40;
+            term.draw(term_x, term_y);
+        }
+
         perf.draw(font, sw, sh);
 
         rl.drawFPS(sw - 90, sh - 60);
