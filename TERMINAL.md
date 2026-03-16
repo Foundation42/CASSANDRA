@@ -2,7 +2,7 @@
 
 CASSANDRA includes a built-in terminal emulator and JavaScript-powered operating system. Press **backtick** (`` ` ``) to toggle.
 
-![CASSANDRA Terminal](screenshot_cameras.png)
+![htop running inside CASSANDRA Terminal](screenshot_terminal.png)
 
 ## Overview
 
