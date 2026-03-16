@@ -114,8 +114,9 @@ pub fn main() !void {
 
     // Welcome message
     term.write("\x1b[1;32mCASSANDRA Terminal\x1b[0m v1.0\r\n");
-    term.write("\x1b[36m─────────────────────────────\x1b[0m\r\n");
-    term.write("Type \x1b[1;33m/help\x1b[0m for commands\r\n\r\n");
+    term.write("\x1b[36m-----------------------------\x1b[0m\r\n");
+    term.write("Type \x1b[1;33mhelp\x1b[0m for commands\r\n\r\n");
+    term.showPrompt();
     defer fx.deinit();
 
     // Overlay persistence DB
@@ -268,12 +269,38 @@ pub fn main() !void {
         if (term.focused) {
             term.handleInput();
             term.update(rl.getFrameTime());
+
+            // Process commands
+            if (term.getCommand()) |cmd| {
+                if (std.mem.eql(u8, cmd, "help")) {
+                    term.write("\x1b[1;36mAvailable commands:\x1b[0m\r\n");
+                    term.write("  \x1b[1;33mhelp\x1b[0m      - Show this help\r\n");
+                    term.write("  \x1b[1;33mclear\x1b[0m     - Clear terminal\r\n");
+                    term.write("  \x1b[1;33mstatus\x1b[0m    - Show system status\r\n");
+                    term.write("  \x1b[1;33mfeeds\x1b[0m     - List active feeds\r\n");
+                    term.write("  \x1b[1;33mcams\x1b[0m      - List cameras\r\n");
+                    term.write("  \x1b[1;33mquit\x1b[0m      - Close terminal\r\n");
+                } else if (std.mem.eql(u8, cmd, "clear")) {
+                    term.write("\x1b[2J\x1b[H");
+                } else if (std.mem.eql(u8, cmd, "quit") or std.mem.eql(u8, cmd, "exit")) {
+                    term.visible = false;
+                    term.focused = false;
+                } else if (std.mem.eql(u8, cmd, "status")) {
+                    term.print("\x1b[1;36mNuclei:\x1b[0m {d}\r\n", .{nd.synset_names.items.len});
+                    term.print("\x1b[1;36mKeyframes:\x1b[0m {d}\r\n", .{nd.keyframes.items.len});
+                } else if (cmd.len > 0) {
+                    term.print("\x1b[1;31mUnknown command:\x1b[0m {s}\r\n", .{cmd});
+                }
+                term.showPrompt();
+            }
         }
 
         if (!term.focused) fx.handleInput();
-        perf.handleInput();
+        if (!term.focused) perf.handleInput();
         if (!term.focused) overlays.handleToggles();
-        if (search.active) {
+        if (term.focused) {
+            // Terminal eats all input when focused — skip everything else
+        } else if (search.active) {
             search.handleInput();
         } else {
             search.handleInput();

@@ -94,9 +94,17 @@ pub const Terminal = struct {
     visible: bool = false,
     focused: bool = false,
 
-    // Input buffer (what the user has typed)
+    // Input buffer (raw keypresses for external consumption)
     input_buf: [4096]u8 = undefined,
     input_len: u16 = 0,
+
+    // Command line buffer (what the user is typing on the current line)
+    cmd_buf: [1024]u8 = undefined,
+    cmd_len: u16 = 0,
+    cmd_ready: bool = false, // true when user pressed enter
+
+    // Command callback
+    prompt: []const u8 = "\x1b[1;32m>\x1b[0m ",
 
     // ---------------------------------------------------------------
     // Lifecycle
@@ -108,11 +116,21 @@ pub const Terminal = struct {
         self.font_size = font_sz;
         self.scroll_bottom = self.rows - 1;
 
-        // Load a monospace font — try system, fall back to default
-        self.font = rl.c.LoadFontEx("viewer/data/terminal_font.ttf", @intFromFloat(font_sz * 2), null, 0);
+        // Load IBM VGA bitmap font — includes CP437 box-drawing characters
+        // Load codepoint range 0x20-0x25FF to cover ASCII, Latin, box-drawing, block elements
+        var codepoints: [9696]c_int = undefined;
+        for (0..9696) |i| {
+            codepoints[i] = @intCast(i + 0x20);
+        }
+        self.font = rl.c.LoadFontEx("data/Px437_IBM_VGA_8x16.ttf", @intFromFloat(font_sz), &codepoints, 9696);
+        if (self.font.glyphCount == 0) {
+            // Try relative to viewer dir
+            self.font = rl.c.LoadFontEx("viewer/data/Px437_IBM_VGA_8x16.ttf", @intFromFloat(font_sz), &codepoints, 9696);
+        }
         if (self.font.glyphCount == 0) {
             self.font = rl.c.GetFontDefault();
         }
+        rl.c.SetTextureFilter(self.font.texture, rl.c.TEXTURE_FILTER_POINT); // crispy pixels!
 
         // Measure cell dimensions
         const m = rl.c.MeasureTextEx(self.font, "M", font_sz, 0);
@@ -447,42 +465,33 @@ pub const Terminal = struct {
     pub fn handleInput(self: *Terminal) void {
         if (!self.focused) return;
 
-        // Read character input
+        // Read character input — echo and buffer for command line
         while (true) {
             const ch = rl.c.GetCharPressed();
             if (ch == 0) break;
-            if (ch >= 32 and ch < 127 and self.input_len < self.input_buf.len) {
-                self.input_buf[self.input_len] = @intCast(ch);
-                self.input_len += 1;
+            if (ch >= 32 and ch < 127) {
+                if (self.cmd_len < self.cmd_buf.len) {
+                    self.cmd_buf[self.cmd_len] = @intCast(ch);
+                    self.cmd_len += 1;
+                    // Echo the character
+                    var echo: [1]u8 = .{@intCast(ch)};
+                    self.write(&echo);
+                }
             }
         }
 
-        // Special keys
+        // Enter → submit command
         if (rl.isKeyPressed(rl.c.KEY_ENTER)) {
-            if (self.input_len < self.input_buf.len) {
-                self.input_buf[self.input_len] = '\n';
-                self.input_len += 1;
-            }
-        }
-        if (rl.isKeyPressed(rl.c.KEY_BACKSPACE)) {
-            if (self.input_len < self.input_buf.len) {
-                self.input_buf[self.input_len] = 0x08;
-                self.input_len += 1;
-            }
+            self.write("\r\n");
+            self.cmd_ready = true;
         }
 
-        // Arrow keys → ANSI escape sequences
-        if (rl.isKeyPressed(rl.c.KEY_UP)) self.pushInputSeq("\x1b[A");
-        if (rl.isKeyPressed(rl.c.KEY_DOWN)) self.pushInputSeq("\x1b[B");
-        if (rl.isKeyPressed(rl.c.KEY_RIGHT)) self.pushInputSeq("\x1b[C");
-        if (rl.isKeyPressed(rl.c.KEY_LEFT)) self.pushInputSeq("\x1b[D");
-        if (rl.isKeyPressed(rl.c.KEY_HOME)) self.pushInputSeq("\x1b[H");
-        if (rl.isKeyPressed(rl.c.KEY_END)) self.pushInputSeq("\x1b[F");
-        if (rl.isKeyPressed(rl.c.KEY_DELETE)) self.pushInputSeq("\x1b[3~");
-        if (rl.isKeyPressed(rl.c.KEY_TAB)) {
-            if (self.input_len < self.input_buf.len) {
-                self.input_buf[self.input_len] = '\t';
-                self.input_len += 1;
+        // Backspace
+        if (rl.isKeyPressed(rl.c.KEY_BACKSPACE)) {
+            if (self.cmd_len > 0) {
+                self.cmd_len -= 1;
+                // Erase character visually: move back, space, move back
+                self.write("\x08 \x08");
             }
         }
 
@@ -499,6 +508,21 @@ pub const Terminal = struct {
             self.full_dirty = true;
             self.any_dirty = true;
         }
+    }
+
+    /// Get the current command if one is ready (user pressed enter).
+    /// Returns null if no command pending. Resets the command buffer and shows a new prompt.
+    pub fn getCommand(self: *Terminal) ?[]const u8 {
+        if (!self.cmd_ready) return null;
+        self.cmd_ready = false;
+        const cmd = self.cmd_buf[0..self.cmd_len];
+        self.cmd_len = 0;
+        return cmd;
+    }
+
+    /// Show the prompt
+    pub fn showPrompt(self: *Terminal) void {
+        self.write(self.prompt);
     }
 
     /// Read and consume pending input bytes
