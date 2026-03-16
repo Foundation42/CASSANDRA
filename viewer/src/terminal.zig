@@ -605,6 +605,13 @@ pub const Terminal = struct {
         if (rl.isKeyPressed(rl.c.KEY_ESCAPE)) self.pushKey(27);
         if (rl.isKeyPressed(rl.c.KEY_DELETE)) self.pushKey(127);
 
+        // Shift+Insert — paste (alternative shortcut)
+        if (rl.c.IsKeyDown(rl.c.KEY_LEFT_SHIFT) or rl.c.IsKeyDown(rl.c.KEY_RIGHT_SHIFT)) {
+            if (rl.isKeyPressed(rl.c.KEY_INSERT)) {
+                self.pasteClipboard();
+            }
+        }
+
         // Arrow keys and nav as escape sequences
         if (rl.isKeyPressed(rl.c.KEY_UP)) self.pushKeys("\x1b[A");
         if (rl.isKeyPressed(rl.c.KEY_DOWN)) self.pushKeys("\x1b[B");
@@ -626,9 +633,16 @@ pub const Terminal = struct {
             if (rl.isKeyPressed(rl.c.KEY_W)) self.pushKey(23); // Ctrl-W
             if (rl.isKeyPressed(rl.c.KEY_A)) self.pushKey(1);  // Ctrl-A (home)
             if (rl.isKeyPressed(rl.c.KEY_E)) self.pushKey(5);  // Ctrl-E (end)
+            if (rl.isKeyPressed(rl.c.KEY_C)) self.pushKey(3);  // Ctrl-C
+            if (rl.isKeyPressed(rl.c.KEY_D)) self.pushKey(4);  // Ctrl-D
+            if (rl.isKeyPressed(rl.c.KEY_L)) self.pushKey(12); // Ctrl-L
             // Ctrl+Left/Right as CSI 1;5 D/C
             if (rl.isKeyPressed(rl.c.KEY_LEFT)) self.pushKeys("\x1b[1;5D");
             if (rl.isKeyPressed(rl.c.KEY_RIGHT)) self.pushKeys("\x1b[1;5C");
+            // Ctrl+V or Ctrl+Shift+V — paste from clipboard
+            if (rl.isKeyPressed(rl.c.KEY_V)) {
+                self.pasteClipboard();
+            }
         }
     }
 
@@ -641,6 +655,17 @@ pub const Terminal = struct {
 
     fn pushKeys(self: *Terminal, seq: []const u8) void {
         for (seq) |b| self.pushKey(b);
+    }
+
+    fn pasteClipboard(self: *Terminal) void {
+        const clip = rl.c.GetClipboardText();
+        if (clip == null) return;
+        var i: usize = 0;
+        while (clip[i] != 0 and self.key_queue_len < self.key_queue.len) : (i += 1) {
+            // Convert \n to \r for terminal (enter key)
+            const ch = if (clip[i] == '\n') @as(u8, 13) else clip[i];
+            self.pushKey(ch);
+        }
     }
 
     /// Read one key from the queue (called from worker thread). Returns 0 if empty.
