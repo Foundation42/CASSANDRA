@@ -567,8 +567,9 @@ pub const JsRuntime = struct {
 
         var buf: [1024]u8 = undefined;
         var len: usize = 0;
-        var hist_idx: isize = -1; // -1 = current input, 0 = most recent, etc.
-        var saved_buf: [1024]u8 = undefined; // save current input when browsing history
+        var pos: usize = 0; // cursor position within buf
+        var hist_idx: isize = -1;
+        var saved_buf: [1024]u8 = undefined;
         var saved_len: usize = 0;
 
         while (!self.shutdown.load(.acquire)) {
@@ -582,62 +583,197 @@ pub const JsRuntime = struct {
             if (key_len == 1) {
                 switch (key_buf[0]) {
                     13 => { // Enter
+                        // Move cursor to end before newline
+                        self.moveCursorRight(buf[0..len], pos, len - pos);
                         self.pushOutput("\r\n");
-                        // Save to history if non-empty
-                        if (len > 0) {
-                            self.addHistory(buf[0..len]);
-                        }
+                        if (len > 0) self.addHistory(buf[0..len]);
                         break;
                     },
                     8 => { // Backspace
-                        if (len > 0) {
+                        if (pos > 0) {
+                            // Shift chars left
+                            std.mem.copyForwards(u8, buf[pos - 1 .. len - 1], buf[pos..len]);
+                            pos -= 1;
                             len -= 1;
-                            self.pushOutput("\x08 \x08");
+                            self.redrawFrom(buf[0..len], pos, len + 1);
                         }
+                    },
+                    127 => { // Delete
+                        if (pos < len) {
+                            std.mem.copyForwards(u8, buf[pos .. len - 1], buf[pos + 1 .. len]);
+                            len -= 1;
+                            self.redrawFrom(buf[0..len], pos, len + 1);
+                        }
+                    },
+                    1 => { // Ctrl-A — home
+                        self.moveCursorLeft(pos);
+                        pos = 0;
+                    },
+                    5 => { // Ctrl-E — end
+                        self.moveCursorRight(buf[0..len], pos, len - pos);
+                        pos = len;
                     },
                     27 => {}, // Escape alone — ignore
                     else => {
                         if (key_buf[0] >= 32 and key_buf[0] < 127 and len < buf.len) {
-                            buf[len] = key_buf[0];
+                            // Insert at cursor position
+                            if (pos < len) {
+                                std.mem.copyBackwards(u8, buf[pos + 1 .. len + 1], buf[pos..len]);
+                            }
+                            buf[pos] = key_buf[0];
                             len += 1;
-                            self.pushOutput(key_buf[0..1]);
+                            pos += 1;
+                            if (pos == len) {
+                                // Appending at end — just echo
+                                self.pushOutput(key_buf[0..1]);
+                            } else {
+                                // Inserted in middle — redraw rest of line
+                                self.redrawFrom(buf[0..len], pos - 1, len);
+                            }
                         }
                     },
                 }
             } else if (key_len >= 3 and key_buf[0] == 27 and key_buf[1] == '[') {
-                switch (key_buf[2]) {
-                    'A' => { // Up — previous history
-                        const max_idx: isize = @intCast(self.history_count);
-                        if (hist_idx + 1 < max_idx) {
-                            // Save current input on first up-press
-                            if (hist_idx == -1) {
-                                @memcpy(saved_buf[0..len], buf[0..len]);
-                                saved_len = len;
+                // Check for modifier sequences like CSI 1;5 C/D (Ctrl+arrow)
+                if (key_len >= 5 and key_buf[2] == '1' and key_buf[3] == ';' and key_buf[4] == '5') {
+                    if (key_len >= 6) {
+                        switch (key_buf[5]) {
+                            'D' => { // Ctrl+Left — word jump left
+                                if (pos > 0) {
+                                    var p = pos;
+                                    // Skip spaces
+                                    while (p > 0 and buf[p - 1] == ' ') p -= 1;
+                                    // Skip word
+                                    while (p > 0 and buf[p - 1] != ' ') p -= 1;
+                                    self.moveCursorLeft(pos - p);
+                                    pos = p;
+                                }
+                            },
+                            'C' => { // Ctrl+Right — word jump right
+                                if (pos < len) {
+                                    var p = pos;
+                                    // Skip word
+                                    while (p < len and buf[p] != ' ') p += 1;
+                                    // Skip spaces
+                                    while (p < len and buf[p] == ' ') p += 1;
+                                    self.moveCursorRight(buf[0..len], pos, p - pos);
+                                    pos = p;
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                } else {
+                    switch (key_buf[2]) {
+                        'A' => { // Up — previous history
+                            const max_idx: isize = @intCast(self.history_count);
+                            if (hist_idx + 1 < max_idx) {
+                                if (hist_idx == -1) {
+                                    @memcpy(saved_buf[0..len], buf[0..len]);
+                                    saved_len = len;
+                                }
+                                hist_idx += 1;
+                                self.loadHistoryRL(hist_idx, &buf, &len, &pos);
                             }
-                            hist_idx += 1;
-                            self.loadHistory(hist_idx, &buf, &len);
-                        }
-                    },
-                    'B' => { // Down — next history / back to current
-                        if (hist_idx > 0) {
-                            hist_idx -= 1;
-                            self.loadHistory(hist_idx, &buf, &len);
-                        } else if (hist_idx == 0) {
-                            // Restore saved current input
-                            hist_idx = -1;
-                            self.eraseLine(len);
-                            @memcpy(buf[0..saved_len], saved_buf[0..saved_len]);
-                            len = saved_len;
-                            self.pushOutput(buf[0..len]);
-                        }
-                    },
-                    else => {},
+                        },
+                        'B' => { // Down — next history / back to current
+                            if (hist_idx > 0) {
+                                hist_idx -= 1;
+                                self.loadHistoryRL(hist_idx, &buf, &len, &pos);
+                            } else if (hist_idx == 0) {
+                                hist_idx = -1;
+                                self.eraseLineFrom(pos, len);
+                                @memcpy(buf[0..saved_len], saved_buf[0..saved_len]);
+                                len = saved_len;
+                                pos = len;
+                                self.pushOutput(buf[0..len]);
+                            }
+                        },
+                        'C' => { // Right
+                            if (pos < len) {
+                                self.pushOutput(buf[pos .. pos + 1]);
+                                pos += 1;
+                            }
+                        },
+                        'D' => { // Left
+                            if (pos > 0) {
+                                self.pushOutput("\x08");
+                                pos -= 1;
+                            }
+                        },
+                        'H' => { // Home
+                            self.moveCursorLeft(pos);
+                            pos = 0;
+                        },
+                        'F' => { // End
+                            self.moveCursorRight(buf[0..len], pos, len - pos);
+                            pos = len;
+                        },
+                        else => {},
+                    }
                 }
             }
         }
 
         trm.raw_mode = was_raw;
         return c.JS_NewStringLen(ctx, &buf, len);
+    }
+
+    /// Move cursor left n positions
+    fn moveCursorLeft(self: *JsRuntime, n: usize) void {
+        var i: usize = 0;
+        while (i < n) : (i += 1) self.pushOutput("\x08");
+    }
+
+    /// Move cursor right by outputting the characters under cursor
+    fn moveCursorRight(self: *JsRuntime, buf: []const u8, from: usize, n: usize) void {
+        if (n > 0 and from + n <= buf.len) {
+            self.pushOutput(buf[from .. from + n]);
+        }
+    }
+
+    /// Redraw line from cursor position, clear any leftover chars, reposition cursor
+    fn redrawFrom(self: *JsRuntime, buf: []const u8, pos: usize, old_len: usize) void {
+        // Move cursor to pos
+        // (we're already at pos on screen after backspace/insert)
+        // Write from pos to end
+        if (pos < buf.len) {
+            self.pushOutput(buf[pos..buf.len]);
+        }
+        // Clear any leftover characters from old longer content
+        if (old_len > buf.len) {
+            var i: usize = 0;
+            while (i < old_len - buf.len) : (i += 1) self.pushOutput(" ");
+            i = 0;
+            while (i < old_len - buf.len) : (i += 1) self.pushOutput("\x08");
+        }
+        // Move cursor back to pos
+        const chars_after = buf.len - pos;
+        self.moveCursorLeft(chars_after);
+    }
+
+    /// Erase line from cursor position to end, for history loading
+    fn eraseLineFrom(self: *JsRuntime, pos: usize, len: usize) void {
+        // Move cursor to start
+        self.moveCursorLeft(pos);
+        // Overwrite with spaces
+        var i: usize = 0;
+        while (i < len) : (i += 1) self.pushOutput(" ");
+        // Move back to start
+        self.moveCursorLeft(len);
+    }
+
+    fn loadHistoryRL(self: *JsRuntime, idx: isize, buf: *[1024]u8, len: *usize, pos: *usize) void {
+        if (idx < 0 or idx >= @as(isize, @intCast(self.history_count))) return;
+        const ui: usize = @intCast(idx);
+        const actual = (self.history_head + self.history.len - 1 - ui) % self.history.len;
+        const hlen = self.history_lens[actual];
+
+        self.eraseLineFrom(pos.*, len.*);
+        @memcpy(buf[0..hlen], self.history[actual][0..hlen]);
+        len.* = hlen;
+        pos.* = hlen;
+        self.pushOutput(buf[0..len.*]);
     }
 
     fn addHistory(self: *JsRuntime, line: []const u8) void {
@@ -649,33 +785,6 @@ pub const JsRuntime = struct {
         if (self.history_count < self.history.len) self.history_count += 1;
     }
 
-    fn loadHistory(self: *JsRuntime, idx: isize, buf: *[1024]u8, len: *usize) void {
-        if (idx < 0 or idx >= @as(isize, @intCast(self.history_count))) return;
-        // History is stored newest at history_head-1, going backwards
-        const ui: usize = @intCast(idx);
-        const actual = (self.history_head + self.history.len - 1 - ui) % self.history.len;
-        const hlen = self.history_lens[actual];
-
-        // Erase current line on screen
-        self.eraseLine(len.*);
-
-        // Load history entry
-        @memcpy(buf[0..hlen], self.history[actual][0..hlen]);
-        len.* = hlen;
-
-        // Display it
-        self.pushOutput(buf[0..len.*]);
-    }
-
-    fn eraseLine(self: *JsRuntime, len: usize) void {
-        // Move cursor back, overwrite with spaces, move back again
-        var i: usize = 0;
-        while (i < len) : (i += 1) self.pushOutput("\x08");
-        i = 0;
-        while (i < len) : (i += 1) self.pushOutput(" ");
-        i = 0;
-        while (i < len) : (i += 1) self.pushOutput("\x08");
-    }
 
     /// exec(filename, capture?) — run a JS file in its own IIFE scope.
     /// If capture is truthy, returns all output as a string instead of sending to terminal.

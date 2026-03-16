@@ -624,6 +624,11 @@ pub const Terminal = struct {
             if (rl.isKeyPressed(rl.c.KEY_K)) self.pushKey(11); // Ctrl-K
             if (rl.isKeyPressed(rl.c.KEY_G)) self.pushKey(7);  // Ctrl-G
             if (rl.isKeyPressed(rl.c.KEY_W)) self.pushKey(23); // Ctrl-W
+            if (rl.isKeyPressed(rl.c.KEY_A)) self.pushKey(1);  // Ctrl-A (home)
+            if (rl.isKeyPressed(rl.c.KEY_E)) self.pushKey(5);  // Ctrl-E (end)
+            // Ctrl+Left/Right as CSI 1;5 D/C
+            if (rl.isKeyPressed(rl.c.KEY_LEFT)) self.pushKeys("\x1b[1;5D");
+            if (rl.isKeyPressed(rl.c.KEY_RIGHT)) self.pushKeys("\x1b[1;5C");
         }
     }
 
