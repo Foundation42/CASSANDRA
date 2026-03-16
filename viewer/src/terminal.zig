@@ -585,6 +585,10 @@ pub const Terminal = struct {
         }
     }
 
+    fn keyRepeat(key: c_int) bool {
+        return rl.isKeyPressed(key) or rl.c.IsKeyPressedRepeat(key);
+    }
+
     fn handleRawInput(self: *Terminal) void {
         self.key_mutex.lock();
         defer self.key_mutex.unlock();
@@ -598,12 +602,12 @@ pub const Terminal = struct {
             }
         }
 
-        // Special keys as raw codes (high byte = 0x80 + key id)
-        if (rl.isKeyPressed(rl.c.KEY_ENTER)) self.pushKey(13);
-        if (rl.isKeyPressed(rl.c.KEY_BACKSPACE)) self.pushKey(8);
+        // Special keys — use IsKeyPressedRepeat for keys that should repeat
+        if (keyRepeat(rl.c.KEY_ENTER)) self.pushKey(13);
+        if (keyRepeat(rl.c.KEY_BACKSPACE)) self.pushKey(8);
         if (rl.isKeyPressed(rl.c.KEY_TAB)) self.pushKey(9);
         if (rl.isKeyPressed(rl.c.KEY_ESCAPE)) self.pushKey(27);
-        if (rl.isKeyPressed(rl.c.KEY_DELETE)) self.pushKey(127);
+        if (keyRepeat(rl.c.KEY_DELETE)) self.pushKey(127);
 
         // Shift+Insert — paste (alternative shortcut)
         if (rl.c.IsKeyDown(rl.c.KEY_LEFT_SHIFT) or rl.c.IsKeyDown(rl.c.KEY_RIGHT_SHIFT)) {
@@ -612,15 +616,15 @@ pub const Terminal = struct {
             }
         }
 
-        // Arrow keys and nav as escape sequences
-        if (rl.isKeyPressed(rl.c.KEY_UP)) self.pushKeys("\x1b[A");
-        if (rl.isKeyPressed(rl.c.KEY_DOWN)) self.pushKeys("\x1b[B");
-        if (rl.isKeyPressed(rl.c.KEY_RIGHT)) self.pushKeys("\x1b[C");
-        if (rl.isKeyPressed(rl.c.KEY_LEFT)) self.pushKeys("\x1b[D");
-        if (rl.isKeyPressed(rl.c.KEY_HOME)) self.pushKeys("\x1b[H");
-        if (rl.isKeyPressed(rl.c.KEY_END)) self.pushKeys("\x1b[F");
-        if (rl.isKeyPressed(rl.c.KEY_PAGE_UP)) self.pushKeys("\x1b[5~");
-        if (rl.isKeyPressed(rl.c.KEY_PAGE_DOWN)) self.pushKeys("\x1b[6~");
+        // Arrow keys and nav — with repeat
+        if (keyRepeat(rl.c.KEY_UP)) self.pushKeys("\x1b[A");
+        if (keyRepeat(rl.c.KEY_DOWN)) self.pushKeys("\x1b[B");
+        if (keyRepeat(rl.c.KEY_RIGHT)) self.pushKeys("\x1b[C");
+        if (keyRepeat(rl.c.KEY_LEFT)) self.pushKeys("\x1b[D");
+        if (keyRepeat(rl.c.KEY_HOME)) self.pushKeys("\x1b[H");
+        if (keyRepeat(rl.c.KEY_END)) self.pushKeys("\x1b[F");
+        if (keyRepeat(rl.c.KEY_PAGE_UP)) self.pushKeys("\x1b[5~");
+        if (keyRepeat(rl.c.KEY_PAGE_DOWN)) self.pushKeys("\x1b[6~");
 
         // Ctrl combos
         if (rl.c.IsKeyDown(rl.c.KEY_LEFT_CONTROL) or rl.c.IsKeyDown(rl.c.KEY_RIGHT_CONTROL)) {
@@ -637,8 +641,8 @@ pub const Terminal = struct {
             if (rl.isKeyPressed(rl.c.KEY_D)) self.pushKey(4);  // Ctrl-D
             if (rl.isKeyPressed(rl.c.KEY_L)) self.pushKey(12); // Ctrl-L
             // Ctrl+Left/Right as CSI 1;5 D/C
-            if (rl.isKeyPressed(rl.c.KEY_LEFT)) self.pushKeys("\x1b[1;5D");
-            if (rl.isKeyPressed(rl.c.KEY_RIGHT)) self.pushKeys("\x1b[1;5C");
+            if (keyRepeat(rl.c.KEY_LEFT)) self.pushKeys("\x1b[1;5D");
+            if (keyRepeat(rl.c.KEY_RIGHT)) self.pushKeys("\x1b[1;5C");
             // Ctrl+V or Ctrl+Shift+V — paste from clipboard
             if (rl.isKeyPressed(rl.c.KEY_V)) {
                 self.pasteClipboard();
