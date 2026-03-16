@@ -71,14 +71,21 @@ while (true) {
         const args = spaceIdx >= 0 ? cmd.substring(spaceIdx + 1) : "";
         const isLast = (i === stages.length - 1);
 
-        // Find script
+        // Find script — or fall back to host binary
         const scriptPath = findScript(name);
         if (!scriptPath) {
-            term.color("red");
-            print("Unknown command: " + name);
-            term.reset();
-            failed = true;
-            break;
+            // Try as host system command
+            if (stages.length === 1) {
+                system(cmd);
+                failed = true; // not really failed, just skip the rest
+                break;
+            } else {
+                term.color("red");
+                print("Unknown command: " + name);
+                term.reset();
+                failed = true;
+                break;
+            }
         }
 
         // Set globals for the script

@@ -30,6 +30,7 @@ pub fn build(b: *std.Build) void {
     exe.addCSourceFile(.{ .file = b.path("vendor/quickjs/libunicode.c"), .flags = qjs_flags });
     exe.addIncludePath(b.path("vendor/quickjs"));
 
+    exe.linkSystemLibrary("util"); // for forkpty
     exe.linkSystemLibrary("raylib");
     exe.linkSystemLibrary("libavformat");
     exe.linkSystemLibrary("libavcodec");

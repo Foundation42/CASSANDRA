@@ -4,6 +4,7 @@ const terminal_mod = @import("terminal.zig");
 pub const c = @cImport({
     @cInclude("quickjs.h");
     @cInclude("quickjs-zig-helpers.h");
+    @cInclude("pty-helpers.h");
 });
 
 const MAX_OUTPUT: usize = 64 * 1024;
@@ -375,8 +376,10 @@ pub const JsRuntime = struct {
         _ = c.JS_SetPropertyStr(ctx, global, "term", term_obj);
 
         // exec(filename, capture?) — run a JS file in its own scope
-        // If capture is true, returns captured output as string instead of sending to terminal
         _ = c.JS_SetPropertyStr(ctx, global, "exec", c.JS_NewCFunction(ctx, jsExec, "exec", 2));
+
+        // system(cmd) — run a host binary with PTY
+        _ = c.JS_SetPropertyStr(ctx, global, "system", c.JS_NewCFunction(ctx, jsSystem, "system", 1));
 
         // fs object
         const fs_obj = c.JS_NewObject(ctx);
@@ -855,6 +858,78 @@ pub const JsRuntime = struct {
             return result;
         }
 
+        return c.qjs_true();
+    }
+
+    /// system(cmd) — spawn a host process with a PTY, pipe I/O through the terminal.
+    /// Blocks until the process exits. Fully interactive (vi, ssh, etc.).
+    fn jsSystem(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+        if (argc < 1) return c.qjs_undefined();
+        const real_ctx = ctx orelse return c.qjs_undefined();
+        const cmd_c = c.JS_ToCString(real_ctx, argv[0]);
+        if (cmd_c == null) return c.qjs_undefined();
+        defer c.JS_FreeCString(real_ctx, cmd_c);
+
+        const self = getSelf(ctx);
+        const trm = self.term;
+
+        // Enable raw mode so we get keystrokes
+        const was_raw = trm.raw_mode;
+        trm.raw_mode = true;
+        trm.key_mutex.lock();
+        trm.key_queue_len = 0;
+        trm.key_mutex.unlock();
+
+        // Spawn process with PTY
+        var child_pid: c.pid_t = 0;
+        const master_fd = c.pty_spawn(cmd_c, &child_pid);
+        if (master_fd < 0) {
+            self.pushOutput("\x1b[1;31mFailed to spawn process\x1b[0m\r\n");
+            trm.raw_mode = was_raw;
+            return c.qjs_false();
+        }
+
+        // Set PTY size to match our terminal
+        c.pty_resize(master_fd, @intCast(trm.rows), @intCast(trm.cols));
+
+        // I/O loop: shuttle data between PTY and terminal
+        var read_buf: [4096]u8 = undefined;
+
+        while (!self.shutdown.load(.acquire)) {
+            // Read PTY output → terminal
+            const n = c.pty_read(master_fd, &read_buf, read_buf.len);
+            if (n > 0) {
+                self.pushOutput(read_buf[0..@intCast(n)]);
+            } else if (n < 0) {
+                // Process closed
+                break;
+            }
+
+            // Read terminal keys → PTY stdin
+            while (true) {
+                const key = trm.readKey();
+                if (key == 0) break;
+                const key_byte = [1]u8{key};
+                _ = c.pty_write(master_fd, &key_byte, 1);
+            }
+
+            // Check if child is still alive
+            if (c.pty_alive(child_pid) == 0) {
+                // Drain remaining output
+                while (true) {
+                    const rem = c.pty_read(master_fd, &read_buf, read_buf.len);
+                    if (rem <= 0) break;
+                    self.pushOutput(read_buf[0..@intCast(rem)]);
+                }
+                break;
+            }
+
+            // Brief sleep to avoid spinning
+            std.time.sleep(5 * std.time.ns_per_ms);
+        }
+
+        c.pty_close(master_fd, child_pid);
+        trm.raw_mode = was_raw;
         return c.qjs_true();
     }
 
