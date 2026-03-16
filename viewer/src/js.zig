@@ -279,6 +279,8 @@ pub const JsRuntime = struct {
         _ = c.JS_SetPropertyStr(ctx, term_obj, "reset", c.JS_NewCFunction(ctx, jsTermReset, "reset", 0));
         _ = c.JS_SetPropertyStr(ctx, term_obj, "cols", c.JS_NewInt32(ctx, @intCast(self.term.cols)));
         _ = c.JS_SetPropertyStr(ctx, term_obj, "rows", c.JS_NewInt32(ctx, @intCast(self.term.rows)));
+        _ = c.JS_SetPropertyStr(ctx, term_obj, "rawMode", c.JS_NewCFunction(ctx, jsTermRawMode, "rawMode", 1));
+        _ = c.JS_SetPropertyStr(ctx, term_obj, "getKey", c.JS_NewCFunction(ctx, jsTermGetKey, "getKey", 0));
         _ = c.JS_SetPropertyStr(ctx, global, "term", term_obj);
 
         // fs object
@@ -386,6 +388,75 @@ pub const JsRuntime = struct {
         const self = getSelf(ctx);
         self.pushOutput("\x1b[0m");
         return c.qjs_undefined();
+    }
+
+    /// term.rawMode(bool) — enable/disable raw key input for interactive programs
+    fn jsTermRawMode(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+        const self = getSelf(ctx);
+        if (argc >= 1) {
+            var val: c_int = 0;
+            _ = c.JS_ToInt32(ctx, &val, argv[0]);
+            self.term.raw_mode = val != 0;
+            // Clear key queue on mode change
+            self.term.key_mutex.lock();
+            self.term.key_queue_len = 0;
+            self.term.key_mutex.unlock();
+        }
+        return c.qjs_undefined();
+    }
+
+    /// term.getKey() — blocking read of a key/sequence. Returns string.
+    /// Returns: single char for printable, "enter"/"backspace"/"escape"/"delete"/"tab" for specials,
+    /// "up"/"down"/"left"/"right"/"home"/"end"/"pageup"/"pagedown" for nav,
+    /// "ctrl-s"/"ctrl-q"/etc for ctrl combos, "" if nothing (shouldn't happen).
+    fn jsTermGetKey(ctx: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValue) callconv(.c) c.JSValue {
+        const self = getSelf(ctx);
+
+        // Block until we get a key (poll every 10ms)
+        var key_buf: [8]u8 = undefined;
+        var key_len: usize = 0;
+        while (key_len == 0) {
+            if (self.shutdown.load(.acquire)) return c.qjs_null();
+            key_len = self.term.readKeySeq(&key_buf);
+            if (key_len == 0) std.time.sleep(10 * std.time.ns_per_ms);
+        }
+
+        // Translate to a friendly string
+        const result: []const u8 = blk: {
+            if (key_len == 1) {
+                break :blk switch (key_buf[0]) {
+                    13 => "enter",
+                    8 => "backspace",
+                    9 => "tab",
+                    27 => "escape",
+                    127 => "delete",
+                    7 => "ctrl-g",
+                    11 => "ctrl-k",
+                    15 => "ctrl-o",
+                    17 => "ctrl-q",
+                    19 => "ctrl-s",
+                    23 => "ctrl-w",
+                    24 => "ctrl-x",
+                    else => &.{key_buf[0]}, // printable char
+                };
+            }
+            if (key_len >= 3 and key_buf[0] == 27 and key_buf[1] == '[') {
+                break :blk switch (key_buf[2]) {
+                    'A' => "up",
+                    'B' => "down",
+                    'C' => "right",
+                    'D' => "left",
+                    'H' => "home",
+                    'F' => "end",
+                    '5' => "pageup",
+                    '6' => "pagedown",
+                    else => "unknown",
+                };
+            }
+            break :blk "unknown";
+        };
+
+        return c.JS_NewStringLen(ctx, result.ptr, result.len);
     }
 
     // ---------------------------------------------------------------

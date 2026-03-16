@@ -106,6 +106,12 @@ pub const Terminal = struct {
     // Command callback
     prompt: []const u8 = "\x1b[1;32m>\x1b[0m ",
 
+    // Raw key queue (for interactive programs like editors)
+    raw_mode: bool = false,
+    key_queue: [256]u8 = undefined,
+    key_queue_len: u16 = 0,
+    key_mutex: std.Thread.Mutex = .{},
+
     // ---------------------------------------------------------------
     // Lifecycle
     // ---------------------------------------------------------------
@@ -465,6 +471,11 @@ pub const Terminal = struct {
     pub fn handleInput(self: *Terminal) void {
         if (!self.focused) return;
 
+        if (self.raw_mode) {
+            self.handleRawInput();
+            return;
+        }
+
         // Read character input — echo and buffer for command line
         while (true) {
             const ch = rl.c.GetCharPressed();
@@ -490,7 +501,6 @@ pub const Terminal = struct {
         if (rl.isKeyPressed(rl.c.KEY_BACKSPACE)) {
             if (self.cmd_len > 0) {
                 self.cmd_len -= 1;
-                // Erase character visually: move back, space, move back
                 self.write("\x08 \x08");
             }
         }
@@ -508,6 +518,95 @@ pub const Terminal = struct {
             self.full_dirty = true;
             self.any_dirty = true;
         }
+    }
+
+    fn handleRawInput(self: *Terminal) void {
+        self.key_mutex.lock();
+        defer self.key_mutex.unlock();
+
+        // Characters
+        while (true) {
+            const ch = rl.c.GetCharPressed();
+            if (ch == 0) break;
+            if (ch >= 32 and ch < 127) {
+                self.pushKey(@intCast(ch));
+            }
+        }
+
+        // Special keys as raw codes (high byte = 0x80 + key id)
+        if (rl.isKeyPressed(rl.c.KEY_ENTER)) self.pushKey(13);
+        if (rl.isKeyPressed(rl.c.KEY_BACKSPACE)) self.pushKey(8);
+        if (rl.isKeyPressed(rl.c.KEY_TAB)) self.pushKey(9);
+        if (rl.isKeyPressed(rl.c.KEY_ESCAPE)) self.pushKey(27);
+        if (rl.isKeyPressed(rl.c.KEY_DELETE)) self.pushKey(127);
+
+        // Arrow keys and nav as escape sequences
+        if (rl.isKeyPressed(rl.c.KEY_UP)) self.pushKeys("\x1b[A");
+        if (rl.isKeyPressed(rl.c.KEY_DOWN)) self.pushKeys("\x1b[B");
+        if (rl.isKeyPressed(rl.c.KEY_RIGHT)) self.pushKeys("\x1b[C");
+        if (rl.isKeyPressed(rl.c.KEY_LEFT)) self.pushKeys("\x1b[D");
+        if (rl.isKeyPressed(rl.c.KEY_HOME)) self.pushKeys("\x1b[H");
+        if (rl.isKeyPressed(rl.c.KEY_END)) self.pushKeys("\x1b[F");
+        if (rl.isKeyPressed(rl.c.KEY_PAGE_UP)) self.pushKeys("\x1b[5~");
+        if (rl.isKeyPressed(rl.c.KEY_PAGE_DOWN)) self.pushKeys("\x1b[6~");
+
+        // Ctrl combos
+        if (rl.c.IsKeyDown(rl.c.KEY_LEFT_CONTROL) or rl.c.IsKeyDown(rl.c.KEY_RIGHT_CONTROL)) {
+            if (rl.isKeyPressed(rl.c.KEY_S)) self.pushKey(19); // Ctrl-S
+            if (rl.isKeyPressed(rl.c.KEY_Q)) self.pushKey(17); // Ctrl-Q
+            if (rl.isKeyPressed(rl.c.KEY_X)) self.pushKey(24); // Ctrl-X
+            if (rl.isKeyPressed(rl.c.KEY_O)) self.pushKey(15); // Ctrl-O
+            if (rl.isKeyPressed(rl.c.KEY_K)) self.pushKey(11); // Ctrl-K
+            if (rl.isKeyPressed(rl.c.KEY_G)) self.pushKey(7);  // Ctrl-G
+            if (rl.isKeyPressed(rl.c.KEY_W)) self.pushKey(23); // Ctrl-W
+        }
+    }
+
+    fn pushKey(self: *Terminal, key: u8) void {
+        if (self.key_queue_len < self.key_queue.len) {
+            self.key_queue[self.key_queue_len] = key;
+            self.key_queue_len += 1;
+        }
+    }
+
+    fn pushKeys(self: *Terminal, seq: []const u8) void {
+        for (seq) |b| self.pushKey(b);
+    }
+
+    /// Read one key from the queue (called from worker thread). Returns 0 if empty.
+    pub fn readKey(self: *Terminal) u8 {
+        self.key_mutex.lock();
+        defer self.key_mutex.unlock();
+        if (self.key_queue_len == 0) return 0;
+        const key = self.key_queue[0];
+        if (self.key_queue_len > 1) {
+            std.mem.copyForwards(u8, self.key_queue[0 .. self.key_queue_len - 1], self.key_queue[1..self.key_queue_len]);
+        }
+        self.key_queue_len -= 1;
+        return key;
+    }
+
+    /// Read an escape sequence from the queue. Returns slice of keys read.
+    pub fn readKeySeq(self: *Terminal, buf: []u8) usize {
+        const first = self.readKey();
+        if (first == 0) return 0;
+        buf[0] = first;
+        if (first != 27) return 1; // not an escape sequence
+
+        // Try to read the rest of the sequence
+        var len: usize = 1;
+        // Small sleep to let the sequence arrive
+        std.time.sleep(5 * std.time.ns_per_ms);
+
+        while (len < buf.len) {
+            const next = self.readKey();
+            if (next == 0) break;
+            buf[len] = next;
+            len += 1;
+            // End of CSI sequence
+            if (next >= 0x40 and next <= 0x7E and len >= 3) break;
+        }
+        return len;
     }
 
     /// Get the current command if one is ready (user pressed enter).
