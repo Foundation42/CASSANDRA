@@ -187,6 +187,30 @@ Keyboard ──> Terminal (Zig)
 
 ![CASSANDRA Shell with help, programs, and host shell](screenshot_shell.png)
 
+## Graphics API
+
+JavaScript programs can draw 2D and 3D graphics directly to the screen:
+
+```javascript
+gfx.create(0, 300, 300);
+gfx.move(0, 100, 50);
+let t = 0;
+while (true) {
+    gfx.begin(0);
+    gfx.clear(10, 10, 20);
+    gfx.camera(0, 5.0, 0.4, t * 0.02);
+    gfx.cube(0, 0, 0, 1.5, gfx.rgb(0, 255, 100), t * 0.03, t * 0.02);
+    gfx.text(8, 8, "CASSANDRA OS", 20, gfx.rgb(0, 200, 255));
+    gfx.end(0);
+    t++;
+    sleep(16);
+}
+```
+
+![Spinning 3D cube in 15 lines of JavaScript](screenshot_cube.png)
+
+Commands flow through a lock-free ring buffer from the JS worker thread to the GPU — like a DMA controller. No frame buffering, no megabytes of memory. The ring grows only when needed.
+
 ## Engine
 
 The terminal is powered by [QuickJS](https://bellard.org/quickjs/) (2025-09-13), Fabrice Bellard's lightweight ES2023 JavaScript engine. It is compiled from source as part of the build (vendored in `viewer/vendor/quickjs/`).
