@@ -147,6 +147,14 @@ pub const JsRuntime = struct {
         _ = c.JS_SetPropertyStr(self.ctx, term_obj, "cols", c.JS_NewInt32(self.ctx, @intCast(self.term.cols)));
         _ = c.JS_SetPropertyStr(self.ctx, term_obj, "rows", c.JS_NewInt32(self.ctx, @intCast(self.term.rows)));
         _ = c.JS_SetPropertyStr(self.ctx, global, "term", term_obj);
+
+        // Create 'fs' object — filesystem access
+        const fs_obj = c.JS_NewObject(self.ctx);
+        _ = c.JS_SetPropertyStr(self.ctx, fs_obj, "readFile", c.JS_NewCFunction(self.ctx, jsFsReadFile, "readFile", 1));
+        _ = c.JS_SetPropertyStr(self.ctx, fs_obj, "writeFile", c.JS_NewCFunction(self.ctx, jsFsWriteFile, "writeFile", 2));
+        _ = c.JS_SetPropertyStr(self.ctx, fs_obj, "listDir", c.JS_NewCFunction(self.ctx, jsFsListDir, "listDir", 1));
+        _ = c.JS_SetPropertyStr(self.ctx, fs_obj, "exists", c.JS_NewCFunction(self.ctx, jsFsExists, "exists", 1));
+        _ = c.JS_SetPropertyStr(self.ctx, global, "fs", fs_obj);
     }
 
     // ---------------------------------------------------------------
@@ -257,5 +265,89 @@ pub const JsRuntime = struct {
         const term = getTerm(ctx);
         term.write("\x1b[0m");
         return c.qjs_undefined();
+    }
+
+    // ---------------------------------------------------------------
+    // Filesystem functions
+    // ---------------------------------------------------------------
+
+    fn cStrToSlice(cstr: [*c]const u8) []const u8 {
+        var len: usize = 0;
+        while (cstr[len] != 0) : (len += 1) {}
+        return cstr[0..len];
+    }
+
+    /// fs.readFile(path) -> string | null
+    fn jsFsReadFile(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+        if (argc < 1) return c.qjs_null();
+        const path_c = c.JS_ToCString(ctx, argv[0]);
+        if (path_c == null) return c.qjs_null();
+        defer c.JS_FreeCString(ctx, path_c);
+        const path = cStrToSlice(path_c);
+
+        const file = std.fs.cwd().openFile(path, .{}) catch return c.qjs_null();
+        defer file.close();
+
+        var buf: [65536]u8 = undefined;
+        const n = file.readAll(&buf) catch return c.qjs_null();
+
+        return c.JS_NewStringLen(ctx, &buf, n);
+    }
+
+    /// fs.writeFile(path, content) -> bool
+    fn jsFsWriteFile(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+        if (argc < 2) return c.qjs_false();
+        const path_c = c.JS_ToCString(ctx, argv[0]);
+        if (path_c == null) return c.qjs_false();
+        defer c.JS_FreeCString(ctx, path_c);
+        const path = cStrToSlice(path_c);
+
+        const content_c = c.JS_ToCString(ctx, argv[1]);
+        if (content_c == null) return c.qjs_false();
+        defer c.JS_FreeCString(ctx, content_c);
+        const content = cStrToSlice(content_c);
+
+        const file = std.fs.cwd().createFile(path, .{}) catch return c.qjs_false();
+        defer file.close();
+        file.writeAll(content) catch return c.qjs_false();
+
+        return c.qjs_true();
+    }
+
+    /// fs.listDir(path) -> [string] | null
+    fn jsFsListDir(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+        if (argc < 1) return c.qjs_null();
+        const path_c = c.JS_ToCString(ctx, argv[0]);
+        if (path_c == null) return c.qjs_null();
+        defer c.JS_FreeCString(ctx, path_c);
+        const path = cStrToSlice(path_c);
+
+        var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return c.qjs_null();
+        defer dir.close();
+
+        const arr = c.JS_NewArray(ctx);
+        var idx: u32 = 0;
+        var iter = dir.iterate();
+        while (iter.next() catch null) |entry| {
+            const name = entry.name;
+            const js_str = c.JS_NewStringLen(ctx, name.ptr, name.len);
+            _ = c.JS_SetPropertyUint32(ctx, arr, idx, js_str);
+            idx += 1;
+            if (idx >= 1000) break; // safety limit
+        }
+
+        return arr;
+    }
+
+    /// fs.exists(path) -> bool
+    fn jsFsExists(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+        if (argc < 1) return c.qjs_false();
+        const path_c = c.JS_ToCString(ctx, argv[0]);
+        if (path_c == null) return c.qjs_false();
+        defer c.JS_FreeCString(ctx, path_c);
+        const path = cStrToSlice(path_c);
+
+        std.fs.cwd().access(path, .{}) catch return c.qjs_false();
+        return c.qjs_true();
     }
 };

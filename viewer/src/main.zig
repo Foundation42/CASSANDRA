@@ -22,6 +22,30 @@ const cameras = @import("overlays/cameras.zig");
 const photo_mod = @import("photo.zig");
 const overlay_db_mod = @import("overlay_db.zig");
 
+fn listScripts(term: *terminal_mod.Terminal) void {
+    // Try both paths
+    const dirs = [_][]const u8{ "../scripts", "scripts" };
+    var found_any = false;
+    for (dirs) |dir_path| {
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch continue;
+        defer dir.close();
+        var iter = dir.iterate();
+        while (iter.next() catch null) |entry| {
+            if (entry.kind != .file) continue;
+            const name = entry.name;
+            if (name.len > 3 and std.mem.eql(u8, name[name.len - 3 ..], ".js")) {
+                const prog_name = name[0 .. name.len - 3];
+                term.print("  \x1b[1;33m{s}\x1b[0m\r\n", .{prog_name});
+                found_any = true;
+            }
+        }
+        if (found_any) break;
+    }
+    if (!found_any) {
+        term.write("  \x1b[0;37m(none found)\x1b[0m\r\n");
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -280,14 +304,15 @@ pub fn main() !void {
 
             // Process commands
             if (term.getCommand()) |cmd| {
+                // Built-in commands
                 if (std.mem.eql(u8, cmd, "help")) {
-                    term.write("\x1b[1;36mAvailable commands:\x1b[0m\r\n");
-                    term.write("  \x1b[1;33mhelp\x1b[0m          - Show this help\r\n");
+                    term.write("\x1b[1;36mBuilt-in commands:\x1b[0m\r\n");
                     term.write("  \x1b[1;33mclear\x1b[0m         - Clear terminal\r\n");
-                    term.write("  \x1b[1;33mstatus\x1b[0m        - Show system status\r\n");
                     term.write("  \x1b[1;33mjs <code>\x1b[0m     - Evaluate JavaScript\r\n");
-                    term.write("  \x1b[1;33mrun <file.js>\x1b[0m - Run a JavaScript file\r\n");
                     term.write("  \x1b[1;33mquit\x1b[0m          - Close terminal\r\n");
+                    term.write("\r\n\x1b[1;36mPrograms:\x1b[0m (drop .js files in scripts/)\r\n");
+                    // List available .js programs
+                    listScripts(&term);
                     term.write("\r\n\x1b[1;36mJavaScript API:\x1b[0m\r\n");
                     term.write("  \x1b[33mprint(...)\x1b[0m       - Print to terminal\r\n");
                     term.write("  \x1b[33mclear()\x1b[0m          - Clear screen\r\n");
@@ -296,24 +321,60 @@ pub fn main() !void {
                     term.write("  \x1b[33mterm.color(name)\x1b[0m - Set color (red/green/cyan/...)\r\n");
                     term.write("  \x1b[33mterm.reset()\x1b[0m     - Reset colors\r\n");
                     term.write("  \x1b[33mterm.cols/rows\x1b[0m   - Terminal dimensions\r\n");
+                } else if (std.mem.eql(u8, cmd, "ls") or std.mem.eql(u8, cmd, "dir")) {
+                    term.write("\x1b[1;36mPrograms:\x1b[0m\r\n");
+                    listScripts(&term);
                 } else if (std.mem.eql(u8, cmd, "clear")) {
                     term.write("\x1b[2J\x1b[H");
                 } else if (std.mem.eql(u8, cmd, "quit") or std.mem.eql(u8, cmd, "exit")) {
                     term.visible = false;
                     term.focused = false;
-                } else if (std.mem.eql(u8, cmd, "status")) {
-                    term.print("\x1b[1;36mNuclei:\x1b[0m {d}\r\n", .{nd.synset_names.items.len});
-                    term.print("\x1b[1;36mKeyframes:\x1b[0m {d}\r\n", .{nd.keyframes.items.len});
                 } else if (cmd.len > 3 and std.mem.eql(u8, cmd[0..3], "js ")) {
                     // Inline JavaScript evaluation
                     js.eval(cmd[3..], "<terminal>");
-                } else if (cmd.len > 4 and std.mem.eql(u8, cmd[0..4], "run ")) {
-                    // Run a JavaScript file
-                    const path = cmd[4..];
-                    term.print("\x1b[0;36mRunning {s}...\x1b[0m\r\n", .{path});
-                    js.evalFile(path);
                 } else if (cmd.len > 0) {
-                    term.print("\x1b[1;31mUnknown command:\x1b[0m {s}\r\n", .{cmd});
+                    // Try to find and run a .js program
+                    // Split command into name and args
+                    var cmd_name = cmd;
+                    var cmd_args: []const u8 = "";
+                    if (std.mem.indexOf(u8, cmd, " ")) |space_idx| {
+                        cmd_name = cmd[0..space_idx];
+                        cmd_args = cmd[space_idx + 1 ..];
+                    }
+
+                    // Set args as a global JS variable before running
+                    if (cmd_args.len > 0) {
+                        var args_js: [2048]u8 = undefined;
+                        const args_code = std.fmt.bufPrint(&args_js, "globalThis.__args = \"{s}\";", .{cmd_args}) catch "";
+                        if (args_code.len > 0) js.eval(args_code, "<args>");
+                    } else {
+                        js.eval("globalThis.__args = \"\";", "<args>");
+                    }
+
+                    // Search paths for <cmd>.js
+                    var path_buf: [512]u8 = undefined;
+
+                    const found = blk: {
+                        // Try ../scripts/<cmd>.js (running from viewer/)
+                        const p1 = std.fmt.bufPrint(&path_buf, "../scripts/{s}.js", .{cmd_name}) catch break :blk false;
+                        if (std.fs.cwd().access(p1, .{})) |_| {
+                            js.evalFile(p1);
+                            break :blk true;
+                        } else |_| {}
+
+                        // Try scripts/<cmd>.js (running from project root)
+                        const p2 = std.fmt.bufPrint(&path_buf, "scripts/{s}.js", .{cmd_name}) catch break :blk false;
+                        if (std.fs.cwd().access(p2, .{})) |_| {
+                            js.evalFile(p2);
+                            break :blk true;
+                        } else |_| {}
+
+                        break :blk false;
+                    };
+
+                    if (!found) {
+                        term.print("\x1b[1;31mUnknown command:\x1b[0m {s}\r\n", .{cmd});
+                    }
                 }
                 term.showPrompt();
             }
