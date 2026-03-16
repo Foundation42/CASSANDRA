@@ -110,7 +110,10 @@ pub const Parser = struct {
                 self.reset();
                 self.state = .escape;
             },
-            '\n' => term.linefeed(),
+            '\n' => {
+                term.cursor_col = 0; // implicit CR on LF (Unix convention)
+                term.linefeed();
+            },
             '\r' => {
                 term.cursor_col = 0;
             },
