@@ -45,8 +45,9 @@ pub const JsRuntime = struct {
     // Busy flag (worker is executing)
     busy: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
-    // C-visible shutdown flag for QuickJS interrupt handler
+    // C-visible flags for QuickJS interrupt handler
     c_shutdown_flag: c_int = 0,
+    c_interrupt_flag: c_int = 0, // set by Ctrl+C, cleared after interrupt
 
     // Command history for readLine
     history: [128][1024]u8 = undefined,
@@ -283,6 +284,12 @@ pub const JsRuntime = struct {
                         stdin_len = copy_len;
                     }
                     self.capturing = false;
+                }
+
+                // Clear interrupt flag after execution
+                if (self.c_interrupt_flag != 0) {
+                    self.pushOutput("\x1b[1;33m^C\x1b[0m\r\n");
+                    self.c_interrupt_flag = 0;
                 }
 
                 self.busy.store(false, .release);
@@ -620,6 +627,14 @@ pub const JsRuntime = struct {
         var saved_len: usize = 0;
 
         while (!self.shutdown.load(.acquire)) {
+            // Check for Ctrl+C interrupt
+            if (self.c_interrupt_flag != 0) {
+                self.pushOutput("^C\r\n");
+                self.c_interrupt_flag = 0;
+                trm.raw_mode = was_raw;
+                return c.JS_NewStringLen(ctx, "", 0);
+            }
+
             const ch = trm.readKey();
             if (ch == 0) {
                 std.time.sleep(10 * std.time.ns_per_ms);
@@ -627,6 +642,12 @@ pub const JsRuntime = struct {
             }
 
             switch (ch) {
+                3 => { // Ctrl+C received as key
+                    self.pushOutput("^C\r\n");
+                    self.c_interrupt_flag = 1; // trigger QuickJS interrupt
+                    trm.raw_mode = was_raw;
+                    return c.JS_NewStringLen(ctx, "", 0);
+                },
                 13 => { // Enter
                     self.moveCursorRight(buf[0..len], pos, len - pos);
                     self.pushOutput("\r\n");

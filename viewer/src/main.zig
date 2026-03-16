@@ -308,6 +308,12 @@ pub fn main() !void {
         js.drainOutput();
 
         if (term.focused) {
+            // Ctrl+C: interrupt running JS program
+            if (rl.c.IsKeyDown(rl.c.KEY_LEFT_CONTROL) or rl.c.IsKeyDown(rl.c.KEY_RIGHT_CONTROL)) {
+                if (rl.isKeyPressed(rl.c.KEY_C)) {
+                    js.c_interrupt_flag = 1;
+                }
+            }
             term.handleInput();
             term.update(rl.getFrameTime());
 

@@ -12,17 +12,16 @@ static inline int qjs_is_exception(JSValue v) { return JS_IsException(v); }
 static inline int qjs_is_undefined(JSValue v) { return JS_IsUndefined(v); }
 static inline int qjs_is_object(JSValue v) { return JS_IsObject(v); }
 
-// Interrupt handler support — stores a pointer to a flag
-static volatile int *qjs_shutdown_flag_ptr = NULL;
-
+// Interrupt handler support — checks two int flags at known offsets
+// opaque points to c_shutdown_flag; c_interrupt_flag is immediately after it
 static inline int qjs_interrupt_handler(JSRuntime *rt, void *opaque) {
     (void)rt;
-    volatile int *flag = (volatile int *)opaque;
-    return flag ? *flag : 0;
+    volatile int *flags = (volatile int *)opaque;
+    // flags[0] = shutdown, flags[1] = interrupt (Ctrl+C)
+    return (flags[0] || flags[1]) ? 1 : 0;
 }
 
 static inline void qjs_set_interrupt_flag(JSRuntime *rt, volatile int *flag) {
-    qjs_shutdown_flag_ptr = flag;
     JS_SetInterruptHandler(rt, qjs_interrupt_handler, (void *)flag);
 }
 
