@@ -219,6 +219,8 @@ pub const DisplayManager = struct {
                     if (!d.active) continue;
                     self.ensureTexture(d);
                     rl.c.BeginTextureMode(d.tex);
+                    // Default: transparent background (programs add their own if needed)
+                    rl.c.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 0 });
                     d.in_frame = true;
                 },
                 .end_frame => {

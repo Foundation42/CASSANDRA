@@ -7,7 +7,7 @@ function Scene(id, w, h) {
     this.h = h || 300;
     this.objects = [];
     this.t = 0;
-    this.bg = [10, 10, 20];
+    this.bg = null; // null = transparent
     this.cam = { dist: 5.0, pitch: 0.4, yaw: 0 };
     gfx.create(this.id, this.w, this.h);
 }
@@ -77,7 +77,7 @@ Scene.prototype.run = function(fps) {
 
         // Render
         gfx.begin(this.id);
-        gfx.clear(this.bg[0], this.bg[1], this.bg[2]);
+        if (this.bg) gfx.clear(this.bg[0], this.bg[1], this.bg[2]);
         gfx.camera(this.id, this.cam.dist, this.cam.pitch, this.cam.yaw);
 
         for (const obj of this.objects) {

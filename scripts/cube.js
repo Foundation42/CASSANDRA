@@ -1,8 +1,9 @@
-// Spinning cube — the simplest 3D demo
+// Spinning cube — floating over the map
 exec("../scripts/lib/scene.js");
 
 const scene = new Scene(0, 300, 300);
 scene.position(100, 50);
+scene.background(-1, 0, 0); // transparent
 
 scene.cube({ size: 1.5, color: gfx.rgb(0, 255, 100) })
     .behave("rotate")
