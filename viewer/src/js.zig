@@ -290,11 +290,9 @@ pub const JsRuntime = struct {
                 if (self.c_interrupt_flag != 0) {
                     self.pushOutput("\x1b[1;33m^C\x1b[0m\r\n");
                     self.c_interrupt_flag = 0;
-                    // Destroy any displays left open by the interrupted program
-                    for (0..display_mod.MAX_DISPLAYS) |i| {
-                        if (self.display_mgr.displays[i].active) {
-                            self.display_mgr.ring.push(.{ .tag = .destroy, .display_id = @intCast(i) });
-                        }
+                    // Close any displays left open by the interrupted program
+                    for (&self.display_mgr.displays) |*d| {
+                        d.active = false;
                     }
                 }
 
