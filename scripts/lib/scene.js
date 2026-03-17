@@ -40,6 +40,12 @@ Scene.prototype.line = function(props) {
     return obj;
 };
 
+Scene.prototype.triangle = function(props) {
+    const obj = new SceneObject("triangle", props);
+    this.objects.push(obj);
+    return obj;
+};
+
 Scene.prototype.rect = function(props) {
     const obj = new SceneObject("rect", props);
     this.objects.push(obj);
@@ -125,7 +131,7 @@ function SceneObject(type, props) {
     this.rx = 0; this.ry = 0; this.rz = 0;
     this.size = 1;
     this.w = 50; this.h = 50; this.r = 20;
-    this.x2 = 0; this.y2 = 0;
+    this.x2 = 0; this.y2 = 0; this.x3 = 0; this.y3 = 0;
     this.color = null;
     this.label = "";
     this.thick = 1;
