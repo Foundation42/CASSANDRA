@@ -489,41 +489,52 @@ fn drawSolidCube(d: *const Display, cx: f32, cy: f32, cz: f32, size: f32, rx: f3
     for (face_order) |fi| {
         const f = faces[fi];
 
-        // Compute face normal via cross product
-        const ax = rotated[f[1]][0] - rotated[f[0]][0];
-        const ay = rotated[f[1]][1] - rotated[f[0]][1];
-        const az = rotated[f[1]][2] - rotated[f[0]][2];
-        const bx = rotated[f[2]][0] - rotated[f[0]][0];
-        const by = rotated[f[2]][1] - rotated[f[0]][1];
-        const bz = rotated[f[2]][2] - rotated[f[0]][2];
-        const nx = ay * bz - az * by;
-        const ny = az * bx - ax * bz;
-        const nz = ax * by - ay * bx;
+        // Compute face normal via cross product of edges in rotated space
+        const e1x = rotated[f[1]][0] - rotated[f[0]][0];
+        const e1y = rotated[f[1]][1] - rotated[f[0]][1];
+        const e1z = rotated[f[1]][2] - rotated[f[0]][2];
+        const e2x = rotated[f[2]][0] - rotated[f[0]][0];
+        const e2y = rotated[f[2]][1] - rotated[f[0]][1];
+        const e2z = rotated[f[2]][2] - rotated[f[0]][2];
+        const nx = e1y * e2z - e1z * e2y;
+        const ny = e1z * e2x - e1x * e2z;
+        const nz = e1x * e2y - e1y * e2x;
         const nl = @sqrt(nx * nx + ny * ny + nz * nz);
-        if (nl < 0.001) continue;
+        if (nl < 0.0001) continue;
+        const nnx = nx / nl;
+        const nny = ny / nl;
+        const nnz = nz / nl;
 
-        // Backface culling: skip faces pointing away from camera
-        // Camera is at (0, 0, cam_dist), face center relative
-        const fcz = (rotated[f[0]][2] + rotated[f[1]][2] + rotated[f[2]][2] + rotated[f[3]][2]) * 0.25;
-        const view_dot = (nz / nl) * (d.cam_dist + fcz);
-        if (view_dot > 0) continue; // facing away
+        // Backface culling: face normal vs view direction (camera at +Z)
+        if (nnz > 0) continue;
 
-        // Lighting: dot(normal, light_dir)
-        const dot = (nx / nl) * nlx + (ny / nl) * nly + (nz / nl) * nlz;
-        const brightness = @max(0.15, @min(1.0, dot * 0.5 + 0.5)); // ambient + diffuse
+        // Lighting: dot(normal, light_dir), clamped
+        const dot = nnx * nlx + nny * nly + nnz * nlz;
+        const brightness = 0.2 + 0.8 * @max(@as(f32, 0.0), @min(@as(f32, 1.0), -dot));
 
-        const r: u8 = @intFromFloat(@as(f32, @floatFromInt(base_color.r)) * brightness);
-        const g: u8 = @intFromFloat(@as(f32, @floatFromInt(base_color.g)) * brightness);
-        const b: u8 = @intFromFloat(@as(f32, @floatFromInt(base_color.b)) * brightness);
-        const face_color = rl.c.Color{ .r = r, .g = g, .b = b, .a = base_color.a };
+        const br: u8 = @intFromFloat(@min(@as(f32, 255.0), @as(f32, @floatFromInt(base_color.r)) * brightness));
+        const bg: u8 = @intFromFloat(@min(@as(f32, 255.0), @as(f32, @floatFromInt(base_color.g)) * brightness));
+        const bb: u8 = @intFromFloat(@min(@as(f32, 255.0), @as(f32, @floatFromInt(base_color.b)) * brightness));
+        const face_color = rl.c.Color{ .r = br, .g = bg, .b = bb, .a = base_color.a };
 
-        // Draw two triangles for the quad face
+        // Project face vertices
         const p0 = projected[f[0]];
         const p1 = projected[f[1]];
         const p2 = projected[f[2]];
         const p3 = projected[f[3]];
 
-        rl.c.DrawTriangle(.{ .x = p0[0], .y = p0[1] }, .{ .x = p1[0], .y = p1[1] }, .{ .x = p2[0], .y = p2[1] }, face_color);
-        rl.c.DrawTriangle(.{ .x = p0[0], .y = p0[1] }, .{ .x = p2[0], .y = p2[1] }, .{ .x = p3[0], .y = p3[1] }, face_color);
+        // Check 2D winding order and ensure CCW for Raylib
+        // Cross product of screen-space edges: positive = CCW
+        const cross2d = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0]);
+
+        if (cross2d > 0) {
+            // CCW — draw normally
+            rl.c.DrawTriangle(.{ .x = p0[0], .y = p0[1] }, .{ .x = p1[0], .y = p1[1] }, .{ .x = p2[0], .y = p2[1] }, face_color);
+            rl.c.DrawTriangle(.{ .x = p0[0], .y = p0[1] }, .{ .x = p2[0], .y = p2[1] }, .{ .x = p3[0], .y = p3[1] }, face_color);
+        } else {
+            // CW — swap winding
+            rl.c.DrawTriangle(.{ .x = p2[0], .y = p2[1] }, .{ .x = p1[0], .y = p1[1] }, .{ .x = p0[0], .y = p0[1] }, face_color);
+            rl.c.DrawTriangle(.{ .x = p3[0], .y = p3[1] }, .{ .x = p2[0], .y = p2[1] }, .{ .x = p0[0], .y = p0[1] }, face_color);
+        }
     }
 }
