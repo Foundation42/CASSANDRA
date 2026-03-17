@@ -93,13 +93,19 @@ while (true) {
         globalThis.__stdin = stdin;
         globalThis.__piped = piped;
 
-        if (!isLast) {
-            // Capture all output (print + term.write) at native level
-            stdin = exec(scriptPath, true) || "";
-            piped = true;
-        } else {
-            // Last stage — output goes to terminal
-            exec(scriptPath);
+        try {
+            if (!isLast) {
+                stdin = exec(scriptPath, true) || "";
+                piped = true;
+            } else {
+                exec(scriptPath);
+            }
+        } catch (e) {
+            if (e && e.message === "interrupted") {
+                // Ctrl+C — silently stop
+                break;
+            }
+            throw e;
         }
     }
 }
