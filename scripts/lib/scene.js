@@ -106,6 +106,9 @@ Scene.prototype._draw = function(obj) {
         case "circle":
             gfx.circle(obj.x, obj.y, obj.r || 20, c);
             break;
+        case "triangle":
+            gfx.triangle(obj.x, obj.y, obj.x2, obj.y2, obj.x3 || 0, obj.y3 || 0, c);
+            break;
         case "text":
             gfx.text(obj.x, obj.y, obj.label || "", obj.size || 12, c);
             break;

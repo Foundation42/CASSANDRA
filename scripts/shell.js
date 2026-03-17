@@ -8,7 +8,7 @@ print("-----------------------------");
 term.reset();
 print("Type help for commands\n");
 
-const SCRIPT_DIRS = ["../scripts", "scripts"];
+const SCRIPT_DIRS = ["../scripts", "scripts", "../scripts/tutorial", "scripts/tutorial"];
 
 while (true) {
     // Prompt
