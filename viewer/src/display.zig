@@ -152,7 +152,8 @@ pub const CmdRing = struct {
 
 pub const Display = struct {
     active: bool = false,
-    tex: rl.c.RenderTexture2D = undefined,
+    tex_front: rl.c.RenderTexture2D = undefined, // blitted to screen
+    tex_back: rl.c.RenderTexture2D = undefined, // being rendered into
     width: u16 = 320,
     height: u16 = 240,
     tex_loaded: bool = false,
@@ -161,7 +162,7 @@ pub const Display = struct {
     screen_y: f32 = 10,
     in_frame: bool = false, // between begin/end
     in_3d: bool = false, // between begin3d/end3d
-    frame_complete: bool = false, // true after end_frame, draw this frame
+    has_good_frame: bool = false, // the RenderTexture contains a fully rendered frame
 };
 
 // ---------------------------------------------------------------
@@ -179,7 +180,8 @@ pub const DisplayManager = struct {
     pub fn deinit(self: *DisplayManager) void {
         for (&self.displays) |*d| {
             if (d.tex_loaded) {
-                rl.c.UnloadRenderTexture(d.tex);
+                rl.c.UnloadRenderTexture(d.tex_front);
+                rl.c.UnloadRenderTexture(d.tex_back);
                 d.tex_loaded = false;
             }
         }
@@ -217,7 +219,7 @@ pub const DisplayManager = struct {
                 .begin_frame => {
                     if (!d.active) continue;
                     self.ensureTexture(d);
-                    rl.c.BeginTextureMode(d.tex);
+                    rl.c.BeginTextureMode(d.tex_back);
                     rl.c.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 0 });
                     d.in_frame = true;
                 },
@@ -229,7 +231,11 @@ pub const DisplayManager = struct {
                     if (d.in_frame) {
                         rl.c.EndTextureMode();
                         d.in_frame = false;
-                        d.frame_complete = true;
+                        // Swap: back becomes front (complete frame ready to blit)
+                        const tmp = d.tex_front;
+                        d.tex_front = d.tex_back;
+                        d.tex_back = tmp;
+                        d.has_good_frame = true;
                     }
                 },
                 // 2D primitives
@@ -365,17 +371,19 @@ pub const DisplayManager = struct {
                     rl.c.EndTextureMode();
                     d.in_frame = false;
                 }
-                rl.c.UnloadRenderTexture(d.tex);
+                rl.c.UnloadRenderTexture(d.tex_front);
+                rl.c.UnloadRenderTexture(d.tex_back);
                 d.tex_loaded = false;
+                d.has_good_frame = false;
                 continue;
             }
-            if (!d.active or !d.tex_loaded or !d.frame_complete) continue;
+            if (!d.active or !d.tex_loaded or !d.has_good_frame) continue;
             // Make sure we're not still in a frame
             if (d.in_frame) {
                 rl.c.EndTextureMode();
                 d.in_frame = false;
             }
-            const tex = d.tex.texture;
+            const tex = d.tex_front.texture;
             const w: f32 = @floatFromInt(tex.width);
             const h: f32 = @floatFromInt(tex.height);
             const src = rl.c.Rectangle{ .x = 0, .y = 0, .width = w, .height = -h };
@@ -389,13 +397,19 @@ pub const DisplayManager = struct {
     fn ensureTexture(self: *DisplayManager, d: *Display) void {
         _ = self;
         if (!d.tex_loaded or d.needs_resize) {
-            if (d.tex_loaded) rl.c.UnloadRenderTexture(d.tex);
-            d.tex = rl.c.LoadRenderTexture(@intCast(d.width), @intCast(d.height));
-            rl.c.SetTextureFilter(d.tex.texture, rl.c.TEXTURE_FILTER_BILINEAR);
-            // Clear to transparent on creation so no VRAM garbage shows
-            rl.c.BeginTextureMode(d.tex);
-            rl.c.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 0 });
-            rl.c.EndTextureMode();
+            if (d.tex_loaded) {
+                rl.c.UnloadRenderTexture(d.tex_front);
+                rl.c.UnloadRenderTexture(d.tex_back);
+            }
+            d.tex_front = rl.c.LoadRenderTexture(@intCast(d.width), @intCast(d.height));
+            d.tex_back = rl.c.LoadRenderTexture(@intCast(d.width), @intCast(d.height));
+            rl.c.SetTextureFilter(d.tex_front.texture, rl.c.TEXTURE_FILTER_BILINEAR);
+            rl.c.SetTextureFilter(d.tex_back.texture, rl.c.TEXTURE_FILTER_BILINEAR);
+            for ([_]rl.c.RenderTexture2D{ d.tex_front, d.tex_back }) |tex| {
+                rl.c.BeginTextureMode(tex);
+                rl.c.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 0 });
+                rl.c.EndTextureMode();
+            }
             d.tex_loaded = true;
             d.needs_resize = false;
         }
