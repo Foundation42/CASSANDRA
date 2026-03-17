@@ -161,6 +161,7 @@ pub const Display = struct {
     screen_y: f32 = 10,
     in_frame: bool = false, // between begin/end
     in_3d: bool = false, // between begin3d/end3d
+    frame_complete: bool = false, // true after end_frame, draw this frame
 };
 
 // ---------------------------------------------------------------
@@ -219,6 +220,7 @@ pub const DisplayManager = struct {
                     rl.c.BeginTextureMode(d.tex);
                     rl.c.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 0 });
                     d.in_frame = true;
+                    d.frame_complete = false;
                 },
                 .end_frame => {
                     if (d.in_3d) {
@@ -228,6 +230,7 @@ pub const DisplayManager = struct {
                     if (d.in_frame) {
                         rl.c.EndTextureMode();
                         d.in_frame = false;
+                        d.frame_complete = true;
                     }
                 },
                 // 2D primitives
@@ -367,7 +370,7 @@ pub const DisplayManager = struct {
                 d.tex_loaded = false;
                 continue;
             }
-            if (!d.active or !d.tex_loaded) continue;
+            if (!d.active or !d.tex_loaded or !d.frame_complete) continue;
             // Make sure we're not still in a frame
             if (d.in_frame) {
                 rl.c.EndTextureMode();
