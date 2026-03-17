@@ -1266,33 +1266,32 @@ pub const JsRuntime = struct {
         return c.qjs_undefined();
     }
 
-    fn jsGfxRgb(_: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    fn jsGfxRgb(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+        // Pack as: a | b<<8 | g<<16 | r<<24 — but avoid endian issues by using
+        // a simple encoding: r in low byte, then g, b, a in high byte
+        // Encode as r + g*256 + b*65536 + a*16777216 (little-endian friendly)
         var r: i32 = 255;
         var g: i32 = 255;
         var b: i32 = 255;
-        if (argc >= 1) _ = c.JS_ToInt32(null, &r, argv[0]);
-        if (argc >= 2) _ = c.JS_ToInt32(null, &g, argv[1]);
-        if (argc >= 3) _ = c.JS_ToInt32(null, &b, argv[2]);
-        const rgba: u32 = (@as(u32, @intCast(r & 0xFF)) << 24) |
-            (@as(u32, @intCast(g & 0xFF)) << 16) |
-            (@as(u32, @intCast(b & 0xFF)) << 8) | 0xFF;
-        return c.JS_NewInt64(null, @intCast(rgba));
+        if (argc >= 1) _ = c.JS_ToInt32(ctx, &r, argv[0]);
+        if (argc >= 2) _ = c.JS_ToInt32(ctx, &g, argv[1]);
+        if (argc >= 3) _ = c.JS_ToInt32(ctx, &b, argv[2]);
+        // Encode as: r | g<<8 | b<<16 | 0xFF<<24
+        const val: i64 = @as(i64, r & 0xFF) | (@as(i64, g & 0xFF) << 8) | (@as(i64, b & 0xFF) << 16) | (@as(i64, 0xFF) << 24);
+        return c.JS_NewInt64(ctx, val);
     }
 
-    fn jsGfxRgba(_: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    fn jsGfxRgba(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
         var r: i32 = 255;
         var g: i32 = 255;
         var b: i32 = 255;
         var a: i32 = 255;
-        if (argc >= 1) _ = c.JS_ToInt32(null, &r, argv[0]);
-        if (argc >= 2) _ = c.JS_ToInt32(null, &g, argv[1]);
-        if (argc >= 3) _ = c.JS_ToInt32(null, &b, argv[2]);
-        if (argc >= 4) _ = c.JS_ToInt32(null, &a, argv[3]);
-        const rgba: u32 = (@as(u32, @intCast(r & 0xFF)) << 24) |
-            (@as(u32, @intCast(g & 0xFF)) << 16) |
-            (@as(u32, @intCast(b & 0xFF)) << 8) |
-            @as(u32, @intCast(a & 0xFF));
-        return c.JS_NewInt64(null, @intCast(rgba));
+        if (argc >= 1) _ = c.JS_ToInt32(ctx, &r, argv[0]);
+        if (argc >= 2) _ = c.JS_ToInt32(ctx, &g, argv[1]);
+        if (argc >= 3) _ = c.JS_ToInt32(ctx, &b, argv[2]);
+        if (argc >= 4) _ = c.JS_ToInt32(ctx, &a, argv[3]);
+        const val: i64 = @as(i64, r & 0xFF) | (@as(i64, g & 0xFF) << 8) | (@as(i64, b & 0xFF) << 16) | (@as(i64, a & 0xFF) << 24);
+        return c.JS_NewInt64(ctx, val);
     }
 
     // ---------------------------------------------------------------

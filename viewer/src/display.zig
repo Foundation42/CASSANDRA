@@ -15,10 +15,10 @@ pub fn toRlColor(c: Color4) rl.c.Color {
 
 pub fn fromU32(v: u32) Color4 {
     return .{
-        .r = @truncate(v >> 24),
-        .g = @truncate(v >> 16),
-        .b = @truncate(v >> 8),
-        .a = @truncate(v),
+        .r = @truncate(v),
+        .g = @truncate(v >> 8),
+        .b = @truncate(v >> 16),
+        .a = @truncate(v >> 24),
     };
 }
 
@@ -219,7 +219,6 @@ pub const DisplayManager = struct {
                     if (!d.active) continue;
                     self.ensureTexture(d);
                     rl.c.BeginTextureMode(d.tex);
-                    // Default: transparent background (programs add their own if needed)
                     rl.c.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 0 });
                     d.in_frame = true;
                 },
@@ -334,6 +333,10 @@ pub const DisplayManager = struct {
             if (d.tex_loaded) rl.c.UnloadRenderTexture(d.tex);
             d.tex = rl.c.LoadRenderTexture(@intCast(d.width), @intCast(d.height));
             rl.c.SetTextureFilter(d.tex.texture, rl.c.TEXTURE_FILTER_BILINEAR);
+            // Clear to transparent on creation so no VRAM garbage shows
+            rl.c.BeginTextureMode(d.tex);
+            rl.c.ClearBackground(.{ .r = 0, .g = 0, .b = 0, .a = 0 });
+            rl.c.EndTextureMode();
             d.tex_loaded = true;
             d.needs_resize = false;
         }
