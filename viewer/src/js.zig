@@ -67,11 +67,14 @@ pub const JsRuntime = struct {
     display_mgr: display_mod.DisplayManager = undefined,
     display_mgr_init: bool = false,
 
+    const history_path = ".cassandra_history";
+
     pub fn init(self: *JsRuntime, term: *terminal_mod.Terminal) void {
         self.term = term;
         self.display_mgr = display_mod.DisplayManager.init(std.heap.page_allocator);
         self.display_mgr_init = true;
         self.shutdown.store(false, .release);
+        self.loadHistory();
         self.worker = std.Thread.spawn(.{}, workerLoop, .{self}) catch null;
     }
 
@@ -440,6 +443,8 @@ pub const JsRuntime = struct {
         _ = c.JS_SetPropertyStr(ctx, gfx_obj, "cube", c.JS_NewCFunction(ctx, jsGfxCube, "cube", 7));
         _ = c.JS_SetPropertyStr(ctx, gfx_obj, "line3d", c.JS_NewCFunction(ctx, jsGfxLine3d, "line3d", 7));
         _ = c.JS_SetPropertyStr(ctx, gfx_obj, "camera", c.JS_NewCFunction(ctx, jsGfxCamera, "camera", 4));
+        _ = c.JS_SetPropertyStr(ctx, gfx_obj, "begin3d", c.JS_NewCFunction(ctx, jsGfxBegin3d, "begin3d", 7));
+        _ = c.JS_SetPropertyStr(ctx, gfx_obj, "end3d", c.JS_NewCFunction(ctx, jsGfxEnd3d, "end3d", 0));
         _ = c.JS_SetPropertyStr(ctx, gfx_obj, "triangle3d", c.JS_NewCFunction(ctx, jsGfxTriangle3d, "triangle3d", 10));
         _ = c.JS_SetPropertyStr(ctx, gfx_obj, "solidCube", c.JS_NewCFunction(ctx, jsGfxSolidCube, "solidCube", 10));
         _ = c.JS_SetPropertyStr(ctx, gfx_obj, "rgb", c.JS_NewCFunction(ctx, jsGfxRgb, "rgb", 3));
@@ -885,6 +890,46 @@ pub const JsRuntime = struct {
         self.history_lens[idx] = @intCast(copy_len);
         self.history_head = (self.history_head + 1) % self.history.len;
         if (self.history_count < self.history.len) self.history_count += 1;
+        self.saveHistory();
+    }
+
+    /// Load command history from disk.
+    fn loadHistory(self: *JsRuntime) void {
+        const file = std.fs.cwd().openFile(history_path, .{}) catch return;
+        defer file.close();
+        const reader = file.reader();
+
+        // Read number of entries
+        const count = reader.readInt(u32, .little) catch return;
+        if (count == 0 or count > self.history.len) return;
+
+        for (0..count) |_| {
+            const len = reader.readInt(u16, .little) catch return;
+            if (len > 1024) return;
+            const idx = self.history_head;
+            reader.readNoEof(self.history[idx][0..len]) catch return;
+            self.history_lens[idx] = len;
+            self.history_head = (self.history_head + 1) % self.history.len;
+            if (self.history_count < self.history.len) self.history_count += 1;
+        }
+    }
+
+    /// Save command history to disk.
+    fn saveHistory(self: *JsRuntime) void {
+        const file = std.fs.cwd().createFile(history_path, .{}) catch return;
+        defer file.close();
+        const writer = file.writer();
+
+        const count: u32 = @intCast(self.history_count);
+        writer.writeInt(u32, count, .little) catch return;
+
+        // Write entries oldest-first so loadHistory replays in order
+        for (0..self.history_count) |i| {
+            const actual = (self.history_head + self.history.len - self.history_count + i) % self.history.len;
+            const len = self.history_lens[actual];
+            writer.writeInt(u16, len, .little) catch return;
+            writer.writeAll(self.history[actual][0..len]) catch return;
+        }
     }
 
 
@@ -1265,6 +1310,28 @@ pub const JsRuntime = struct {
         cmd.f[1] = if (argc >= 3) getF(ctx, argv, 2) else 0.3;
         cmd.f[2] = if (argc >= 4) getF(ctx, argv, 3) else 0.0;
         self.pushGfx(cmd);
+        return c.qjs_undefined();
+    }
+
+    /// gfx.begin3d(camX,camY,camZ, targetX,targetY,targetZ, fovy)
+    fn jsGfxBegin3d(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+        const self = getSelf(ctx);
+        var cmd = display_mod.DrawCmd{ .tag = .begin3d };
+        cmd.f[0] = if (argc >= 1) getF(ctx, argv, 0) else 5; // camX
+        cmd.f[1] = if (argc >= 2) getF(ctx, argv, 1) else 5; // camY
+        cmd.f[2] = if (argc >= 3) getF(ctx, argv, 2) else 5; // camZ
+        cmd.f[3] = if (argc >= 4) getF(ctx, argv, 3) else 0; // targetX
+        cmd.f[4] = if (argc >= 5) getF(ctx, argv, 4) else 0; // targetY
+        cmd.f[5] = if (argc >= 6) getF(ctx, argv, 5) else 0; // targetZ
+        cmd.f[6] = if (argc >= 7) getF(ctx, argv, 6) else 45; // fovy
+        self.pushGfx(cmd);
+        return c.qjs_undefined();
+    }
+
+    /// gfx.end3d()
+    fn jsGfxEnd3d(ctx: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValue) callconv(.c) c.JSValue {
+        const self = getSelf(ctx);
+        self.pushGfx(.{ .tag = .end3d });
         return c.qjs_undefined();
     }
 

@@ -45,7 +45,9 @@ pub const CmdTag = enum(u8) {
     text,
     pixel,
 
-    // 3D primitives
+    // 3D mode
+    begin3d, // enter 3D mode with camera
+    end3d, // back to 2D
     line3d,
     cube3d,
     triangle3d,
@@ -158,11 +160,7 @@ pub const Display = struct {
     screen_x: f32 = 10,
     screen_y: f32 = 10,
     in_frame: bool = false, // between begin/end
-
-    // 3D camera
-    cam_dist: f32 = 5.0,
-    cam_pitch: f32 = 0.3,
-    cam_yaw: f32 = 0.0,
+    in_3d: bool = false, // between begin3d/end3d
 };
 
 // ---------------------------------------------------------------
@@ -213,9 +211,7 @@ pub const DisplayManager = struct {
                     d.screen_y = cmd.f[1];
                 },
                 .set_camera => {
-                    d.cam_dist = cmd.f[0];
-                    d.cam_pitch = cmd.f[1];
-                    d.cam_yaw = cmd.f[2];
+                    // Legacy — camera now set via begin3d
                 },
                 .begin_frame => {
                     if (!d.active) continue;
@@ -225,6 +221,10 @@ pub const DisplayManager = struct {
                     d.in_frame = true;
                 },
                 .end_frame => {
+                    if (d.in_3d) {
+                        rl.c.EndMode3D();
+                        d.in_3d = false;
+                    }
                     if (d.in_frame) {
                         rl.c.EndTextureMode();
                         d.in_frame = false;
@@ -285,33 +285,58 @@ pub const DisplayManager = struct {
                     if (!d.in_frame) continue;
                     rl.c.DrawPixelV(.{ .x = cmd.f[0], .y = cmd.f[1] }, toRlColor(cmd.color));
                 },
+                .begin3d => {
+                    if (!d.in_frame) continue;
+                    // f[0..2] = camera position, f[3..5] = target, f[6] = fovy
+                    const cam3d = rl.c.Camera3D{
+                        .position = .{ .x = cmd.f[0], .y = cmd.f[1], .z = cmd.f[2] },
+                        .target = .{ .x = cmd.f[3], .y = cmd.f[4], .z = cmd.f[5] },
+                        .up = .{ .x = 0, .y = 1, .z = 0 },
+                        .fovy = if (cmd.f[6] > 0) cmd.f[6] else 45.0,
+                        .projection = rl.c.CAMERA_PERSPECTIVE,
+                    };
+                    rl.c.BeginMode3D(cam3d);
+                    d.in_3d = true;
+                },
+                .end3d => {
+                    if (d.in_3d) {
+                        rl.c.EndMode3D();
+                        d.in_3d = false;
+                    }
+                },
                 .line3d => {
                     if (!d.in_frame) continue;
-                    const p1 = project3D(d, cmd.f[0], cmd.f[1], cmd.f[2]);
-                    const p2 = project3D(d, cmd.f[3], cmd.f[4], cmd.f[5]);
-                    rl.c.DrawLineEx(.{ .x = p1[0], .y = p1[1] }, .{ .x = p2[0], .y = p2[1] }, 1.5, toRlColor(cmd.color));
+                    rl.c.DrawLine3D(
+                        .{ .x = cmd.f[0], .y = cmd.f[1], .z = cmd.f[2] },
+                        .{ .x = cmd.f[3], .y = cmd.f[4], .z = cmd.f[5] },
+                        toRlColor(cmd.color),
+                    );
                 },
                 .cube3d => {
                     if (!d.in_frame) continue;
-                    drawWireCube(d, cmd.f[0], cmd.f[1], cmd.f[2], cmd.f[3], cmd.f[4], cmd.f[5], toRlColor(cmd.color));
+                    // Wireframe cube: position + size
+                    rl.c.DrawCubeWires(
+                        .{ .x = cmd.f[0], .y = cmd.f[1], .z = cmd.f[2] },
+                        cmd.f[3], cmd.f[3], cmd.f[3], // width, height, length = size
+                        toRlColor(cmd.color),
+                    );
                 },
                 .triangle3d => {
                     if (!d.in_frame) continue;
-                    const p1 = project3D(d, cmd.f[0], cmd.f[1], cmd.f[2]);
-                    const p2 = project3D(d, cmd.f[3], cmd.f[4], cmd.f[5]);
-                    const p3 = project3D(d, cmd.f[6], cmd.f[7], cmd.f[8]);
-                    rl.c.DrawTriangle(
-                        .{ .x = p1[0], .y = p1[1] },
-                        .{ .x = p2[0], .y = p2[1] },
-                        .{ .x = p3[0], .y = p3[1] },
+                    rl.c.DrawTriangle3D(
+                        .{ .x = cmd.f[0], .y = cmd.f[1], .z = cmd.f[2] },
+                        .{ .x = cmd.f[3], .y = cmd.f[4], .z = cmd.f[5] },
+                        .{ .x = cmd.f[6], .y = cmd.f[7], .z = cmd.f[8] },
                         toRlColor(cmd.color),
                     );
                 },
                 .cube3d_solid => {
                     if (!d.in_frame) continue;
-                    // f[0..2] = center, f[3] = size, f[4] = rx, f[5] = ry
-                    // f[6] = light_x, f[7] = light_y, f[8] = light_z (light direction)
-                    drawSolidCube(d, cmd.f[0], cmd.f[1], cmd.f[2], cmd.f[3], cmd.f[4], cmd.f[5], cmd.f[6], cmd.f[7], cmd.f[8], cmd.color);
+                    rl.c.DrawCube(
+                        .{ .x = cmd.f[0], .y = cmd.f[1], .z = cmd.f[2] },
+                        cmd.f[3], cmd.f[3], cmd.f[3],
+                        toRlColor(cmd.color),
+                    );
                 },
             }
         }
@@ -362,179 +387,3 @@ pub const DisplayManager = struct {
         }
     }
 };
-
-// ---------------------------------------------------------------
-// 3D Projection
-// ---------------------------------------------------------------
-
-fn project3D(d: *const Display, x: f32, y: f32, z: f32) [2]f32 {
-    const cy = @cos(d.cam_yaw);
-    const sy = @sin(d.cam_yaw);
-    const cp = @cos(d.cam_pitch);
-    const sp = @sin(d.cam_pitch);
-
-    const rx = x * cy - z * sy;
-    const rz = x * sy + z * cy;
-    const ry = y * cp - rz * sp;
-    const rz2 = y * sp + rz * cp;
-
-    const depth = rz2 + d.cam_dist;
-    const scale = d.cam_dist / @max(depth, 0.01);
-    const hw: f32 = @as(f32, @floatFromInt(d.width)) / 2.0;
-    const hh: f32 = @as(f32, @floatFromInt(d.height)) / 2.0;
-
-    return .{ hw + rx * scale * hw * 0.5, hh - ry * scale * hh * 0.5 };
-}
-
-fn drawWireCube(d: *const Display, cx: f32, cy: f32, cz: f32, size: f32, rx: f32, ry: f32, color: rl.c.Color) void {
-    const s = size * 0.5;
-    const verts = [8][3]f32{
-        .{ -s, -s, -s }, .{ s, -s, -s }, .{ s, s, -s }, .{ -s, s, -s },
-        .{ -s, -s, s },  .{ s, -s, s },  .{ s, s, s },  .{ -s, s, s },
-    };
-
-    var projected: [8][2]f32 = undefined;
-    const crx = @cos(rx);
-    const srx = @sin(rx);
-    const cry = @cos(ry);
-    const sry = @sin(ry);
-
-    for (0..8) |i| {
-        const vx = verts[i][0];
-        const vy = verts[i][1];
-        const vz = verts[i][2];
-        const x2 = vx * cry - vz * sry;
-        const z2 = vx * sry + vz * cry;
-        const y2 = vy * crx - z2 * srx;
-        const z3 = vy * srx + z2 * crx;
-        projected[i] = project3D(d, cx + x2, cy + y2, cz + z3);
-    }
-
-    const edges = [12][2]u8{
-        .{ 0, 1 }, .{ 1, 2 }, .{ 2, 3 }, .{ 3, 0 },
-        .{ 4, 5 }, .{ 5, 6 }, .{ 6, 7 }, .{ 7, 4 },
-        .{ 0, 4 }, .{ 1, 5 }, .{ 2, 6 }, .{ 3, 7 },
-    };
-
-    for (edges) |e| {
-        const a = projected[e[0]];
-        const b = projected[e[1]];
-        rl.c.DrawLineEx(.{ .x = a[0], .y = a[1] }, .{ .x = b[0], .y = b[1] }, 1.5, color);
-    }
-}
-
-fn drawSolidCube(d: *const Display, cx: f32, cy: f32, cz: f32, size: f32, rx: f32, ry: f32, lx: f32, ly: f32, lz: f32, base_color: Color4) void {
-    const s = size * 0.5;
-    const verts = [8][3]f32{
-        .{ -s, -s, -s }, .{ s, -s, -s }, .{ s, s, -s }, .{ -s, s, -s },
-        .{ -s, -s, s },  .{ s, -s, s },  .{ s, s, s },  .{ -s, s, s },
-    };
-
-    // Rotate vertices
-    const crx = @cos(rx);
-    const srx = @sin(rx);
-    const cry = @cos(ry);
-    const sry = @sin(ry);
-
-    var rotated: [8][3]f32 = undefined;
-    var projected: [8][2]f32 = undefined;
-
-    for (0..8) |i| {
-        const vx = verts[i][0];
-        const vy = verts[i][1];
-        const vz = verts[i][2];
-        const x2 = vx * cry - vz * sry;
-        const z2 = vx * sry + vz * cry;
-        const y2 = vy * crx - z2 * srx;
-        const z3 = vy * srx + z2 * crx;
-        rotated[i] = .{ x2, y2, z3 };
-        projected[i] = project3D(d, cx + x2, cy + y2, cz + z3);
-    }
-
-    // 6 faces: each is 2 triangles, with a face normal for lighting
-    // Face definition: [v0, v1, v2, v3] — two triangles: (0,1,2) and (0,2,3)
-    const faces = [6][4]u8{
-        .{ 0, 1, 2, 3 }, // front (-Z)
-        .{ 5, 4, 7, 6 }, // back (+Z)
-        .{ 4, 0, 3, 7 }, // left (-X)
-        .{ 1, 5, 6, 2 }, // right (+X)
-        .{ 3, 2, 6, 7 }, // top (+Y)
-        .{ 4, 5, 1, 0 }, // bottom (-Y)
-    };
-
-    // Normalize light direction
-    const ll = @sqrt(lx * lx + ly * ly + lz * lz);
-    const nlx = if (ll > 0.001) lx / ll else 0;
-    const nly = if (ll > 0.001) ly / ll else -1;
-    const nlz = if (ll > 0.001) lz / ll else 0;
-
-    // Sort faces by average Z depth (painter's algorithm)
-    var face_order: [6]u8 = .{ 0, 1, 2, 3, 4, 5 };
-    var face_depths: [6]f32 = undefined;
-    for (0..6) |fi| {
-        const f = faces[fi];
-        face_depths[fi] = (rotated[f[0]][2] + rotated[f[1]][2] + rotated[f[2]][2] + rotated[f[3]][2]) * 0.25;
-    }
-    // Simple bubble sort (6 elements)
-    for (0..5) |i| {
-        for (i + 1..6) |j| {
-            if (face_depths[face_order[i]] < face_depths[face_order[j]]) {
-                const tmp = face_order[i];
-                face_order[i] = face_order[j];
-                face_order[j] = tmp;
-            }
-        }
-    }
-
-    for (face_order) |fi| {
-        const f = faces[fi];
-
-        // Compute face normal via cross product of edges in rotated space
-        const e1x = rotated[f[1]][0] - rotated[f[0]][0];
-        const e1y = rotated[f[1]][1] - rotated[f[0]][1];
-        const e1z = rotated[f[1]][2] - rotated[f[0]][2];
-        const e2x = rotated[f[2]][0] - rotated[f[0]][0];
-        const e2y = rotated[f[2]][1] - rotated[f[0]][1];
-        const e2z = rotated[f[2]][2] - rotated[f[0]][2];
-        const nx = e1y * e2z - e1z * e2y;
-        const ny = e1z * e2x - e1x * e2z;
-        const nz = e1x * e2y - e1y * e2x;
-        const nl = @sqrt(nx * nx + ny * ny + nz * nz);
-        if (nl < 0.0001) continue;
-        const nnx = nx / nl;
-        const nny = ny / nl;
-        const nnz = nz / nl;
-
-        // Backface culling: face normal vs view direction (camera at +Z)
-        if (nnz > 0) continue;
-
-        // Lighting: dot(normal, light_dir), clamped
-        const dot = nnx * nlx + nny * nly + nnz * nlz;
-        const brightness = 0.2 + 0.8 * @max(@as(f32, 0.0), @min(@as(f32, 1.0), -dot));
-
-        const br: u8 = @intFromFloat(@min(@as(f32, 255.0), @as(f32, @floatFromInt(base_color.r)) * brightness));
-        const bg: u8 = @intFromFloat(@min(@as(f32, 255.0), @as(f32, @floatFromInt(base_color.g)) * brightness));
-        const bb: u8 = @intFromFloat(@min(@as(f32, 255.0), @as(f32, @floatFromInt(base_color.b)) * brightness));
-        const face_color = rl.c.Color{ .r = br, .g = bg, .b = bb, .a = base_color.a };
-
-        // Project face vertices
-        const p0 = projected[f[0]];
-        const p1 = projected[f[1]];
-        const p2 = projected[f[2]];
-        const p3 = projected[f[3]];
-
-        // Check 2D winding order and ensure CCW for Raylib
-        // Cross product of screen-space edges: positive = CCW
-        const cross2d = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0]);
-
-        if (cross2d > 0) {
-            // CCW — draw normally
-            rl.c.DrawTriangle(.{ .x = p0[0], .y = p0[1] }, .{ .x = p1[0], .y = p1[1] }, .{ .x = p2[0], .y = p2[1] }, face_color);
-            rl.c.DrawTriangle(.{ .x = p0[0], .y = p0[1] }, .{ .x = p2[0], .y = p2[1] }, .{ .x = p3[0], .y = p3[1] }, face_color);
-        } else {
-            // CW — swap winding
-            rl.c.DrawTriangle(.{ .x = p2[0], .y = p2[1] }, .{ .x = p1[0], .y = p1[1] }, .{ .x = p0[0], .y = p0[1] }, face_color);
-            rl.c.DrawTriangle(.{ .x = p3[0], .y = p3[1] }, .{ .x = p2[0], .y = p2[1] }, .{ .x = p0[0], .y = p0[1] }, face_color);
-        }
-    }
-}
