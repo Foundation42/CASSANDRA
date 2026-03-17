@@ -209,6 +209,8 @@ while (true) {
 
 ![Spinning 3D cube in 15 lines of JavaScript](screenshot_cube.png)
 
+![Solar system simulation with behaviors](screenshot_solarsystem.png)
+
 Commands flow through a lock-free ring buffer from the JS worker thread to the GPU — like a DMA controller. No frame buffering, no megabytes of memory. The ring grows only when needed.
 
 ## Engine
