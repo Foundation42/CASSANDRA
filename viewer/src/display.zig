@@ -296,9 +296,19 @@ pub const DisplayManager = struct {
         }
     }
 
-    /// Blit all active displays to screen
+    /// Blit all active displays to screen, clean up inactive ones
     pub fn drawAll(self: *DisplayManager) void {
         for (&self.displays) |*d| {
+            // Clean up textures for deactivated displays (must happen on main/GPU thread)
+            if (!d.active and d.tex_loaded) {
+                if (d.in_frame) {
+                    rl.c.EndTextureMode();
+                    d.in_frame = false;
+                }
+                rl.c.UnloadRenderTexture(d.tex);
+                d.tex_loaded = false;
+                continue;
+            }
             if (!d.active or !d.tex_loaded) continue;
             // Make sure we're not still in a frame
             if (d.in_frame) {
