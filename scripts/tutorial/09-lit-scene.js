@@ -5,7 +5,7 @@ const scene = new Scene(0, 450, 400);
 scene.position(50, 30);
 scene.background(10, 10, 20);
 
-scene.text({ x: 10, y: 10, label: "09 - Lit Scene", size: 16, color: gfx.rgb(200, 200, 200) });
+scene.text({ x: 10, y: 10, label: "09 - Lit Beautiful Scene", size: 16, color: gfx.rgb(200, 200, 200) });
 
 // Three solid cubes at different positions
 scene.cube({ solid: true, x: -2.5, y: 0, z: 0, size: 1.2, color: gfx.rgb(255, 80, 80) });
