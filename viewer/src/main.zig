@@ -192,7 +192,7 @@ pub fn main() !void {
     var selection: overlay_mod.Selection = .none;
 
     // Render performance timers
-    var perf = perf_mod.PerfTimers{};
+    var perf = perf_mod.PerfTimers{ .js = &js };
 
     while (!rl.windowShouldClose()) {
         const dt = rl.getFrameTime();
@@ -311,7 +311,7 @@ pub fn main() !void {
             // Ctrl+C: interrupt running JS program
             if (rl.c.IsKeyDown(rl.c.KEY_LEFT_CONTROL) or rl.c.IsKeyDown(rl.c.KEY_RIGHT_CONTROL)) {
                 if (rl.isKeyPressed(rl.c.KEY_C)) {
-                    js.c_interrupt_flag = 1;
+                    js.c_flags[1] = 1;
                 }
             }
             term.handleInput();

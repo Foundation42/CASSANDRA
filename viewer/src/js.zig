@@ -46,8 +46,10 @@ pub const JsRuntime = struct {
     busy: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     // C-visible flags for QuickJS interrupt handler
-    c_shutdown_flag: c_int = 0,
-    c_interrupt_flag: c_int = 0, // set by Ctrl+C, cleared after interrupt
+    // MUST be a contiguous array — the C interrupt handler reads flags[0] and flags[1]
+    // by pointer arithmetic, so Zig's struct field reordering would break separate fields.
+    // [0] = shutdown, [1] = interrupt (Ctrl+C)
+    c_flags: [2]c_int = .{ 0, 0 },
 
     // Command history for readLine
     history: [128][1024]u8 = undefined,
@@ -67,6 +69,16 @@ pub const JsRuntime = struct {
     display_mgr: display_mod.DisplayManager = undefined,
     display_mgr_init: bool = false,
 
+    // JS memory stats (written by worker, read by main for perf HUD)
+    mem_malloc_size: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    mem_obj_count: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    mem_str_count: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    mem_atom_count: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    mem_shape_count: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    mem_js_func_count: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    mem_poll_counter: u32 = 0, // worker-only counter to throttle idle mem updates
+    qjs_rt: ?*c.JSRuntime = null, // set by worker thread, used for mem stats
+
     const history_path = ".cassandra_history";
 
     pub fn init(self: *JsRuntime, term: *terminal_mod.Terminal) void {
@@ -80,7 +92,7 @@ pub const JsRuntime = struct {
 
     pub fn deinit(self: *JsRuntime) void {
         self.shutdown.store(true, .release);
-        self.c_shutdown_flag = 1; // signal QuickJS interrupt handler
+        self.c_flags[0] = 1; // signal QuickJS interrupt handler
         // Unblock readLine/getKey by pushing Enter so they return
         self.term.key_mutex.lock();
         self.term.pushKey(13);
@@ -206,11 +218,12 @@ pub const JsRuntime = struct {
         // Raise GC threshold to reduce collection pauses during rendering
         c.JS_SetGCThreshold(rt, 16 * 1024 * 1024); // 16MB before GC
 
-        // Store self pointer for callbacks
+        // Store self pointer and runtime for callbacks
+        self.qjs_rt = rt;
         c.JS_SetContextOpaque(ctx, @ptrCast(self));
 
         // Set interrupt handler to abort long-running JS on shutdown
-        c.qjs_set_interrupt_flag(rt, &self.c_shutdown_flag);
+        c.qjs_set_interrupt_flag(rt, &self.c_flags[0]);
 
         // Register built-in functions
         registerBuiltins(ctx, self);
@@ -293,14 +306,17 @@ pub const JsRuntime = struct {
                 }
 
                 // Clear interrupt flag and clean up displays after execution
-                if (self.c_interrupt_flag != 0) {
+                if (self.c_flags[1] != 0) {
                     self.pushOutput("\x1b[1;33m^C\x1b[0m\r\n");
-                    self.c_interrupt_flag = 0;
+                    self.c_flags[1] = 0;
                     // Close any displays left open by the interrupted program
                     for (&self.display_mgr.displays) |*d| {
                         d.active = false;
                     }
                 }
+
+                // Update memory stats for perf HUD
+                self.updateMemStats(rt);
 
                 self.busy.store(false, .release);
             } else {
@@ -308,6 +324,18 @@ pub const JsRuntime = struct {
                 std.time.sleep(10 * std.time.ns_per_ms);
             }
         }
+    }
+
+    /// Snapshot QuickJS memory usage into atomics for the main thread perf HUD.
+    fn updateMemStats(self: *JsRuntime, rt: *c.JSRuntime) void {
+        var mem: c.JSMemoryUsage = undefined;
+        c.JS_ComputeMemoryUsage(rt, &mem);
+        self.mem_malloc_size.store(mem.malloc_size, .release);
+        self.mem_obj_count.store(mem.obj_count, .release);
+        self.mem_str_count.store(mem.str_count, .release);
+        self.mem_atom_count.store(mem.atom_count, .release);
+        self.mem_shape_count.store(mem.shape_count, .release);
+        self.mem_js_func_count.store(mem.js_func_count, .release);
     }
 
     fn execCode(ctx: *c.JSContext, self: *JsRuntime, code: []const u8, filename: []const u8) void {
@@ -489,16 +517,21 @@ pub const JsRuntime = struct {
             if (ms > 0 and ms < 30000) {
                 // Sleep in small chunks so Ctrl+C is responsive
                 var remaining: u64 = @intCast(ms);
-                while (remaining > 0 and self.c_interrupt_flag == 0 and !self.shutdown.load(.acquire)) {
+                while (remaining > 0 and self.c_flags[1] == 0 and !self.shutdown.load(.acquire)) {
                     const chunk: u64 = @min(remaining, 10);
                     std.time.sleep(chunk * @as(u64, std.time.ns_per_ms));
                     remaining -= chunk;
                 }
                 // If interrupted during sleep, kill all displays immediately
-                if (self.c_interrupt_flag != 0) {
+                if (self.c_flags[1] != 0) {
                     for (&self.display_mgr.displays) |*d| {
                         d.active = false;
                     }
+                }
+                // Update mem stats periodically (~every 500ms at 60fps)
+                self.mem_poll_counter +%= 1;
+                if (self.mem_poll_counter % 30 == 0) {
+                    if (self.qjs_rt) |rt| self.updateMemStats(rt);
                 }
             }
         }
@@ -640,6 +673,9 @@ pub const JsRuntime = struct {
         const self = getSelf(ctx);
         const trm = self.term;
 
+        // Update mem stats when shell is waiting for input
+        if (self.qjs_rt) |rt| self.updateMemStats(rt);
+
         const was_raw = trm.raw_mode;
         trm.raw_mode = true;
         trm.key_mutex.lock();
@@ -655,9 +691,9 @@ pub const JsRuntime = struct {
 
         while (!self.shutdown.load(.acquire)) {
             // Check for Ctrl+C interrupt
-            if (self.c_interrupt_flag != 0) {
+            if (self.c_flags[1] != 0) {
                 self.pushOutput("^C\r\n");
-                self.c_interrupt_flag = 0;
+                self.c_flags[1] = 0;
                 trm.raw_mode = was_raw;
                 return c.JS_NewStringLen(ctx, "", 0);
             }
@@ -671,7 +707,7 @@ pub const JsRuntime = struct {
             switch (ch) {
                 3 => { // Ctrl+C received as key
                     self.pushOutput("^C\r\n");
-                    self.c_interrupt_flag = 1; // trigger QuickJS interrupt
+                    self.c_flags[1] = 1; // trigger QuickJS interrupt
                     trm.raw_mode = was_raw;
                     return c.JS_NewStringLen(ctx, "", 0);
                 },
@@ -997,7 +1033,8 @@ pub const JsRuntime = struct {
             const ex = c.JS_GetException(real_ctx);
             defer c.JS_FreeValue(real_ctx, ex);
 
-            const is_interrupt = self.c_interrupt_flag != 0;
+            const is_interrupt = self.c_flags[1] != 0;
+            if (is_interrupt) self.c_flags[1] = 0; // clear so caller (shell.js) can continue
 
             const result_obj = c.JS_NewObject(real_ctx);
             _ = c.JS_SetPropertyStr(real_ctx, result_obj, "ok", c.qjs_false());
@@ -1170,7 +1207,7 @@ pub const JsRuntime = struct {
     fn jsGfxBegin(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
         const self = getSelf(ctx);
         // Don't start new frames if interrupted
-        if (self.c_interrupt_flag != 0) return c.qjs_undefined();
+        if (self.c_flags[1] != 0) return c.qjs_undefined();
         var cmd = display_mod.DrawCmd{ .tag = .begin_frame };
         cmd.display_id = if (argc >= 1) @intCast(@as(u32, @bitCast(getI(ctx, argv, 0))) & 3) else 0;
         self.pushGfx(cmd);
